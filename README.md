@@ -109,7 +109,7 @@ npm run build-mac
 npm run build-linux
 ```
 
-Built files will be in `electron_app/dist/`
+Built files will be in `electron_app/build/`
 
 ## Troubleshooting
 
