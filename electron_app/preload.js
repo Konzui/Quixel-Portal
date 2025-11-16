@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld(
     windowMinimize: () => ipcRenderer.send('window-minimize'),
     windowMaximize: () => ipcRenderer.send('window-maximize'),
     windowClose: () => ipcRenderer.send('window-close'),
+    startWindowDrag: (x, y) => ipcRenderer.send('start-window-drag', x, y),
+    updateWindowDrag: (x, y) => ipcRenderer.send('update-window-drag', x, y),
+    endWindowDrag: () => ipcRenderer.send('end-window-drag'),
 
     // Menu
     showAppMenu: (x, y) => ipcRenderer.send('show-app-menu', x, y),

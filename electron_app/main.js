@@ -40,6 +40,96 @@ function injectDebugScript() {
 
   const debugScript = `
     (function() {
+      // ═══════════════════════════════════════════════════════════════
+      // 🛡️ GLOBAL ERROR HANDLERS - Catch unhandled errors and promise rejections
+      // ═══════════════════════════════════════════════════════════════
+      
+      // Track if we're in a download attempt
+      window.downloadAttemptStartTime = null;
+      window.downloadTimeoutId = null;
+      
+      // Global error handler for unhandled errors
+      window.addEventListener('error', function(event) {
+        // Check if this error is related to API calls during download
+        if (window.downloadAttemptStartTime && event.error) {
+          const errorMessage = event.error.message || event.error.toString() || '';
+          const errorStack = event.error.stack || '';
+          
+          // Check for API error patterns
+          if (errorMessage.includes('Request failed with status code') ||
+              errorMessage.includes('status code 400') ||
+              errorMessage.includes('status code 401') ||
+              errorMessage.includes('status code 403') ||
+              errorMessage.includes('status code 404') ||
+              errorMessage.includes('status code 500') ||
+              errorMessage.includes('Cannot read properties of undefined') ||
+              errorStack.includes('Request failed')) {
+            
+            const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
+            if (timeSinceAttempt < 10000) {
+              // Clear timeout
+              if (window.downloadTimeoutId) {
+                clearTimeout(window.downloadTimeoutId);
+                window.downloadTimeoutId = null;
+              }
+              
+              // Trigger failure handler
+              if (window.onDownloadFailed) {
+                window.onDownloadFailed({
+                  url: window.location.href,
+                  error: 'API Error: ' + errorMessage
+                });
+              }
+              
+              // Reset tracking
+              window.downloadAttemptStartTime = null;
+            }
+          }
+        }
+      });
+      
+      // Global handler for unhandled promise rejections
+      window.addEventListener('unhandledrejection', function(event) {
+        if (window.downloadAttemptStartTime && event.reason) {
+          const errorMessage = event.reason.message || event.reason.toString() || '';
+          const errorStack = event.reason.stack || '';
+          
+          // Check for API error patterns
+          if (errorMessage.includes('Request failed with status code') ||
+              errorMessage.includes('status code 400') ||
+              errorMessage.includes('status code 401') ||
+              errorMessage.includes('status code 403') ||
+              errorMessage.includes('status code 404') ||
+              errorMessage.includes('status code 500') ||
+              errorMessage.includes('Cannot read properties of undefined') ||
+              errorStack.includes('Request failed')) {
+            
+            const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
+            if (timeSinceAttempt < 10000) {
+              // Clear timeout
+              if (window.downloadTimeoutId) {
+                clearTimeout(window.downloadTimeoutId);
+                window.downloadTimeoutId = null;
+              }
+              
+              // Trigger failure handler
+              if (window.onDownloadFailed) {
+                window.onDownloadFailed({
+                  url: window.location.href,
+                  error: 'API Error: ' + errorMessage
+                });
+              }
+              
+              // Reset tracking
+              window.downloadAttemptStartTime = null;
+              
+              // Prevent default error handling
+              event.preventDefault();
+            }
+          }
+        }
+      });
+      
       // Create bridge for folder selection and downloads
       window.electronBridge = {
         selectDownloadPath: async function() {
@@ -128,18 +218,19 @@ function injectDebugScript() {
         /* Download notification styles */
         #quixel-download-notification {
           position: fixed;
-          top: 20px;
-          right: 20px;
+          bottom: 20px;
+          left: 20px;
           background: #1a1a1a;
           border: 1px solid rgba(255, 255, 255, 0.1);
           border-radius: 6px;
           padding: 10px 14px;
+          padding-right: 32px;
           min-width: 250px;
           max-width: 350px;
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
           z-index: 10000;
           opacity: 0;
-          transform: translateY(-20px);
+          transform: translateY(20px);
           transition: opacity 0.3s ease, transform 0.3s ease;
           pointer-events: none;
         }
@@ -148,6 +239,46 @@ function injectDebugScript() {
           opacity: 1;
           transform: translateY(0);
           pointer-events: auto;
+        }
+        
+        /* Close button for notification */
+        #quixel-download-notification .notification-close {
+          position: absolute;
+          top: 8px;
+          right: 8px;
+          width: 20px;
+          height: 20px;
+          cursor: pointer;
+          opacity: 0.6;
+          transition: opacity 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: none;
+          background: transparent;
+          padding: 0;
+        }
+        
+        #quixel-download-notification .notification-close:hover {
+          opacity: 1;
+        }
+        
+        #quixel-download-notification .notification-close::before,
+        #quixel-download-notification .notification-close::after {
+          content: '';
+          position: absolute;
+          width: 12px;
+          height: 2px;
+          background: rgba(255, 255, 255, 0.8);
+          border-radius: 1px;
+        }
+        
+        #quixel-download-notification .notification-close::before {
+          transform: rotate(45deg);
+        }
+        
+        #quixel-download-notification .notification-close::after {
+          transform: rotate(-45deg);
         }
 
         #quixel-download-notification .notification-title {
@@ -479,6 +610,38 @@ function injectDebugScript() {
 
                   // Store reference to this button for progress updates
                   window.currentDownloadButton = btn;
+                  
+                  // Track download attempt start time for timeout mechanism
+                  window.downloadAttemptStartTime = Date.now();
+                  
+                  // Notify main process that download attempt started (via console message)
+                  console.log('QUIXEL_DOWNLOAD_ATTEMPT_START:' + window.downloadAttemptStartTime);
+                  
+                  // Set up timeout - if no download starts within 10 seconds, trigger failure
+                  if (window.downloadTimeoutId) {
+                    clearTimeout(window.downloadTimeoutId);
+                  }
+                  
+                  window.downloadTimeoutId = setTimeout(() => {
+                    // Check if download actually started (will be cleared by onDownloadProgress/onDownloadComplete)
+                    if (window.currentDownloadButton === btn && window.downloadAttemptStartTime) {
+                      const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
+                      if (timeSinceAttempt >= 10000) {
+                        // Timeout reached - no download started
+                        // Trigger failure handler
+                        if (window.onDownloadFailed) {
+                          window.onDownloadFailed({
+                            url: window.location.href,
+                            error: 'Download timeout: No download started. The server may be experiencing issues or the request was invalid.'
+                          });
+                        }
+                        
+                        // Reset tracking
+                        window.downloadAttemptStartTime = null;
+                        window.downloadTimeoutId = null;
+                      }
+                    }
+                  }, 10000); // 10 second timeout
                 }, 100);
               });
             }
@@ -731,6 +894,14 @@ function injectDebugScript() {
         }, 5000);
       }
 
+      // Function to hide notification
+      function hideNotification(notification) {
+        notification.classList.remove('show');
+        setTimeout(() => {
+          notification.innerHTML = '';
+        }, 300); // Wait for fade-out animation
+      }
+
       // Function to show import to Blender notification
       function showImportNotification(completionData) {
         const notification = ensureNotificationElement();
@@ -741,6 +912,7 @@ function injectDebugScript() {
           : '<div class="notification-thumbnail-placeholder">No preview</div>';
 
         notification.innerHTML = \`
+          <button class="notification-close" title="Close"></button>
           <div class="notification-content-with-thumb">
             \${thumbnailHtml}
             <div class="notification-text">
@@ -755,13 +927,21 @@ function injectDebugScript() {
           notification.classList.add('show');
         }, 10);
 
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          notification.classList.remove('show');
-          setTimeout(() => {
-            notification.innerHTML = '';
-          }, 300); // Wait for fade-out animation
+        // Auto-hide after 5 seconds (only if still showing)
+        let autoHideTimeout = setTimeout(() => {
+          if (notification.classList.contains('show')) {
+            hideNotification(notification);
+          }
         }, 5000);
+        
+        // Add click handler for close button
+        const closeBtn = notification.querySelector('.notification-close');
+        if (closeBtn) {
+          closeBtn.addEventListener('click', () => {
+            clearTimeout(autoHideTimeout);
+            hideNotification(notification);
+          });
+        }
       }
 
       // Listen for Blender import completion (set up via window object)
@@ -784,12 +964,26 @@ function injectDebugScript() {
 
       // Set up download callbacks from main process
       window.onDownloadProgress = function(data) {
+        // Clear timeout since download has started
+        if (window.downloadTimeoutId) {
+          clearTimeout(window.downloadTimeoutId);
+          window.downloadTimeoutId = null;
+        }
+        window.downloadAttemptStartTime = null;
+        
         if (window.currentDownloadButton) {
           updateProgressBar(window.currentDownloadButton, data.progress);
         }
       };
 
       window.onDownloadComplete = function(data) {
+        // Clear timeout since download completed
+        if (window.downloadTimeoutId) {
+          clearTimeout(window.downloadTimeoutId);
+          window.downloadTimeoutId = null;
+        }
+        window.downloadAttemptStartTime = null;
+        
         if (window.currentDownloadButton) {
           updateProgressBar(window.currentDownloadButton, 100);
 
@@ -807,18 +1001,26 @@ function injectDebugScript() {
       };
 
       window.onDownloadFailed = function(data) {
+        // Clear timeout
+        if (window.downloadTimeoutId) {
+          clearTimeout(window.downloadTimeoutId);
+          window.downloadTimeoutId = null;
+        }
+        window.downloadAttemptStartTime = null;
+        
         if (window.currentDownloadButton) {
           removeProgressBar(window.currentDownloadButton);
 
           // Restore button text to original
           if (window.currentDownloadButton._textElement && window.currentDownloadButton.dataset.originalText) {
             window.currentDownloadButton._textElement.textContent = window.currentDownloadButton.dataset.originalText;
+            window.currentDownloadButton._textElement.classList.remove('animated-dots');
           }
 
           window.currentDownloadButton = null;
         }
 
-        alert('Download failed: ' + data.error);
+        alert('Download failed: ' + (data.error || 'Unknown error'));
       };
     })();
   `;
@@ -971,11 +1173,9 @@ function createCachedThumbnail(originalThumbPath, assetId) {
     const pngCachePath = path.join(cacheDir, `${assetId}.png`);
     fs.writeFileSync(pngCachePath, pngBuffer);
 
-    console.log(`✅ Created cached thumbnail: ${pngCachePath}`);
     return pngCachePath;
 
   } catch (error) {
-    console.error('❌ Failed to create cached thumbnail:', error);
     return null;
   }
 }
@@ -1056,8 +1256,7 @@ function saveImportToHistory(importData) {
     fs.writeFileSync(historyFile, JSON.stringify(history, null, 2));
 
   } catch (error) {
-    // Failed to save import to history - log but don't crash
-    console.error('Failed to save import to history:', error);
+    // Failed to save import to history - don't crash
   }
 }
 
@@ -1423,8 +1622,90 @@ function createWindow() {
   // Load Quixel website with authentication check
   loadQuixelWithAuthCheck();
 
+  // ═══════════════════════════════════════════════════════════════
+  // 🌐 NETWORK REQUEST INTERCEPTION - Detect API errors
+  // ═══════════════════════════════════════════════════════════════
+
+  // Track download attempts to detect when API calls fail
+  let downloadAttemptStartTime = null;
+  let downloadTimeoutId = null;
+
+  // Intercept failed network requests to detect API errors
+  ses.webRequest.onCompleted(
+    {
+      urls: ['https://quixel.com/*', 'https://*.quixel.com/*', 'https://*.epicgames.com/*']
+    },
+    (details) => {
+      // Check for error status codes (400, 401, 403, 404, 500, etc.)
+      if (details.statusCode >= 400 && downloadAttemptStartTime !== null) {
+        // Check if this error occurred within 10 seconds of a download attempt
+        const timeSinceAttempt = Date.now() - downloadAttemptStartTime;
+        if (timeSinceAttempt < 10000) {
+          // This is likely an API error related to the download attempt
+          // Clear the timeout since we detected the error
+          if (downloadTimeoutId) {
+            clearTimeout(downloadTimeoutId);
+            downloadTimeoutId = null;
+          }
+
+          // Reset download attempt tracking
+          downloadAttemptStartTime = null;
+
+          // Notify the page about the failure
+          if (browserView) {
+            browserView.webContents.executeJavaScript(
+              `if (window.onDownloadFailed) {
+                window.onDownloadFailed({
+                  url: '${details.url}',
+                  error: 'API Error: Request failed with status code ${details.statusCode}'
+                });
+              }`
+            );
+          }
+        }
+      }
+    }
+  );
+
+  // Also intercept response errors
+  ses.webRequest.onErrorOccurred(
+    {
+      urls: ['https://quixel.com/*', 'https://*.quixel.com/*', 'https://*.epicgames.com/*']
+    },
+    (details) => {
+      if (downloadAttemptStartTime !== null) {
+        const timeSinceAttempt = Date.now() - downloadAttemptStartTime;
+        if (timeSinceAttempt < 10000) {
+          if (downloadTimeoutId) {
+            clearTimeout(downloadTimeoutId);
+            downloadTimeoutId = null;
+          }
+
+          downloadAttemptStartTime = null;
+
+          if (browserView) {
+            browserView.webContents.executeJavaScript(
+              `if (window.onDownloadFailed) {
+                window.onDownloadFailed({
+                  url: '${details.url}',
+                  error: 'Network Error: ${details.error}'
+                });
+              }`
+            );
+          }
+        }
+      }
+    }
+  );
+
   // Global download handler - intercepts ALL downloads from BrowserView
   ses.on('will-download', (event, item, webContents) => {
+    // Clear download timeout since download actually started
+    if (downloadTimeoutId) {
+      clearTimeout(downloadTimeoutId);
+      downloadTimeoutId = null;
+    }
+    downloadAttemptStartTime = null;
     // Notify titlebar window that download started
     if (mainWindow) {
       mainWindow.webContents.send('download-started', {
@@ -1726,6 +2007,63 @@ function createWindow() {
         }
       }
     }
+
+    // Track download attempt start from injected script
+    if (typeof message === 'string' && message.startsWith('QUIXEL_DOWNLOAD_ATTEMPT_START:')) {
+      const timestamp = parseInt(message.substring('QUIXEL_DOWNLOAD_ATTEMPT_START:'.length));
+      if (!isNaN(timestamp)) {
+        downloadAttemptStartTime = timestamp;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔍 ENHANCED ERROR DETECTION - Parse console errors for API failures
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Detect API errors from console messages (especially error level)
+    if (level >= 2 && typeof message === 'string' && downloadAttemptStartTime !== null) {
+      const timeSinceAttempt = Date.now() - downloadAttemptStartTime;
+      
+      // Only check errors that occur within 10 seconds of download attempt
+      if (timeSinceAttempt < 10000) {
+        // Check for API error patterns in console messages
+        if (message.includes('Request failed with status code') ||
+            message.includes('status code 400') ||
+            message.includes('status code 401') ||
+            message.includes('status code 403') ||
+            message.includes('status code 404') ||
+            message.includes('status code 500') ||
+            message.includes('Cannot read properties of undefined') ||
+            message.includes('Api Error Occurred') ||
+            message.includes('Api Error')) {
+          
+          // Clear timeout
+          if (downloadTimeoutId) {
+            clearTimeout(downloadTimeoutId);
+            downloadTimeoutId = null;
+          }
+          
+          // Reset download attempt tracking
+          downloadAttemptStartTime = null;
+          
+          // Extract status code if available
+          const statusMatch = message.match(/status code (\d+)/);
+          const statusCode = statusMatch ? statusMatch[1] : 'unknown';
+          
+          // Notify the page about the failure
+          if (browserView) {
+            browserView.webContents.executeJavaScript(
+              `if (window.onDownloadFailed) {
+                window.onDownloadFailed({
+                  url: '${browserView.webContents.getURL()}',
+                  error: 'API Error: Request failed with status code ${statusCode}'
+                });
+              }`
+            );
+          }
+        }
+      }
+    }
   });
 
   // Track when URL changes (including hash/query params)
@@ -1903,6 +2241,35 @@ ipcMain.on('window-maximize', () => {
 ipcMain.on('window-close', () => {
   // Close button now hides to tray instead of closing completely
   if (mainWindow) mainWindow.hide();
+});
+
+// Window dragging handlers
+let isDraggingWindow = false;
+let dragStartPos = { x: 0, y: 0 };
+let windowStartPos = { x: 0, y: 0 };
+
+ipcMain.on('start-window-drag', (event, x, y) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    isDraggingWindow = true;
+    dragStartPos = { x, y };
+    const bounds = mainWindow.getBounds();
+    windowStartPos = { x: bounds.x, y: bounds.y };
+  }
+});
+
+ipcMain.on('update-window-drag', (event, x, y) => {
+  if (mainWindow && !mainWindow.isDestroyed() && isDraggingWindow) {
+    const deltaX = x - dragStartPos.x;
+    const deltaY = y - dragStartPos.y;
+    mainWindow.setPosition(
+      windowStartPos.x + deltaX,
+      windowStartPos.y + deltaY
+    );
+  }
+});
+
+ipcMain.on('end-window-drag', () => {
+  isDraggingWindow = false;
 });
 
 // Get navigation state
@@ -2198,7 +2565,6 @@ ipcMain.handle('get-import-history', async () => {
     return history.imports || [];
 
   } catch (error) {
-    console.error('Error loading import history:', error);
     return [];
   }
 });
