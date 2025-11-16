@@ -1,0 +1,59 @@
+{
+  "name": "quixel-portal",
+  "version": "1.0.0",
+  "description": "Quixel Megascans Portal Browser",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build-win": "electron-builder --win",
+    "build-mac": "electron-builder --mac",
+    "build-linux": "electron-builder --linux"
+  },
+  "keywords": [
+    "quixel",
+    "megascans",
+    "blender"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "extract-zip": "^2.0.1"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.quixel.portal",
+    "productName": "Quixel Portal",
+    "directories": {
+      "output": "build"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/*",
+      "!nul",
+      "!**/nul"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraFiles": [],
+      "icon": "assets/images/windows_icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/images/windows_icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/images/windows_icon.ico"
+    }
+  }
+}

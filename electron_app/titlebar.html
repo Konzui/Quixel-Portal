@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quixel Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="titlebar.css">
+</head>
+<body>
+  <!-- Custom Titlebar -->
+  <div id="titlebar">
+    <div class="titlebar-drag-region">
+      <!-- Left Section: Logo Menu -->
+      <div class="titlebar-left">
+        <button id="app-menu-btn" class="menu-button" title="Menu">
+          <div class="logo-container">
+            <img src="assets/icons/logo_24.svg" class="logo-icon" alt="Logo">
+            <img src="assets/icons/dropdown_24.svg" class="dropdown-arrow" alt="Dropdown">
+          </div>
+        </button>
+
+        <!-- Navigation Buttons -->
+        <div class="nav-buttons">
+          <button id="back-btn" class="nav-button" title="Back" disabled>
+            <img src="assets/icons/back_arrow_24.svg" alt="Back">
+          </button>
+          <button id="forward-btn" class="nav-button" title="Forward" disabled>
+            <img src="assets/icons/return_arrow_24.svg" alt="Forward">
+          </button>
+          <button id="reload-btn" class="nav-button" title="Reload">
+            <img src="assets/icons/refresh_24.svg" alt="Reload">
+          </button>
+          <button id="home-btn" class="nav-button" title="Home">
+            <img src="assets/icons/home_24.svg" alt="Home">
+          </button>
+        </div>
+      </div>
+
+      <!-- Center Section: Title -->
+      <div class="titlebar-center">
+        <div id="page-title-wrapper" class="page-title-wrapper">
+          <img id="copy-icon" class="copy-icon" src="assets/icons/copy_link_24.svg" alt="Copy">
+          <span id="page-title">Quixel Portal</span>
+        </div>
+      </div>
+
+      <!-- Right Section: Window Controls -->
+      <div class="titlebar-right">
+        <button id="downloads-btn" class="nav-button" title="Downloads">
+          <img id="downloads-btn-icon" src="assets/icons/right_sidepanel_closed_24.svg" alt="Downloads">
+        </button>
+        <div class="titlebar-divider"></div>
+        <button id="minimize-btn" class="window-button" title="Minimize">
+          <img src="assets/icons/minimize_24.svg" alt="Minimize">
+        </button>
+        <button id="maximize-btn" class="window-button" title="Maximize">
+          <img src="assets/icons/maximize_24.svg" alt="Maximize">
+        </button>
+        <button id="close-btn" class="window-button close" title="Close">
+          <img src="assets/icons/close_24.svg" alt="Close">
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Downloads Panel Backdrop (covers BrowserView) -->
+  <div id="downloads-backdrop" class="downloads-backdrop"></div>
+
+  <!-- Downloads Panel -->
+  <div id="downloads-panel" class="downloads-panel">
+    <div class="downloads-panel-header">
+      <button id="close-panel-btn" class="close-panel-btn" title="Close">
+        <img src="assets/icons/close_right_24.svg" alt="Close">
+      </button>
+      <div class="panel-tabs">
+        <button id="downloads-tab" class="panel-tab active" data-tab="downloads">Downloads</button>
+        <button id="imports-tab" class="panel-tab" data-tab="imports">Import History</button>
+      </div>
+    </div>
+
+    <div class="downloads-panel-content">
+      <div id="downloads-list" class="downloads-list">
+        <!-- Download items will be added here dynamically -->
+        <div class="downloads-empty">
+          <p>No downloads yet</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="downloads-panel-footer">
+      <button id="open-explorer-btn" class="footer-button">
+        <img src="assets/icons/folder_24.svg" alt="Folder">
+        Open in Explorer
+      </button>
+    </div>
+  </div>
+
+  <link rel="stylesheet" href="downloads-panel.css">
+  <script src="downloads-panel.js"></script>
+  <script src="titlebar.js"></script>
+</body>
+</html>
