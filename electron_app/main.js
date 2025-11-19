@@ -9,30 +9,30 @@ let tray = null;
 let isQuitting = false;
 let splashWindow = null;
 
+// Store the Blender instance ID passed from command-line
+let blenderInstanceId = null;
+
 // ═══════════════════════════════════════════════════════════════
-// 🚀 SINGLE INSTANCE LOCK - Prevent multiple instances
+// 🔑 PARSE COMMAND-LINE ARGUMENTS - Get Blender instance ID
 // ═══════════════════════════════════════════════════════════════
 
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  // Another instance is already running
-  app.quit();
+// Parse command-line arguments to get the Blender instance ID
+const args = process.argv.slice(1);
+const instanceIndex = args.indexOf('--blender-instance');
+if (instanceIndex !== -1 && instanceIndex + 1 < args.length) {
+  blenderInstanceId = args[instanceIndex + 1];
+  console.log(`🔑 Quixel Portal: Received Blender instance ID: ${blenderInstanceId}`);
 } else {
-  // This is the first instance - listen for second instance attempts
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
-    // Someone tried to run a second instance - show the existing window (NO splash!)
-    if (mainWindow) {
-      if (!mainWindow.isVisible()) {
-        mainWindow.show();
-      }
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
-    }
-  });
+  console.log('⚠️ Quixel Portal: No Blender instance ID provided (backward compatibility mode)');
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 🚀 MULTI-INSTANCE MODE - Each Blender gets its own Electron
+// ═══════════════════════════════════════════════════════════════
+
+// REMOVED: Single instance lock
+// Reason: Allow multiple Blender instances to each have their own Electron window
+// Each Electron will monitor its Blender's heartbeat and close when Blender closes
 
 // Debug script injection - monitors DOM for download buttons
 function injectDebugScript() {
@@ -597,7 +597,14 @@ function injectDebugScript() {
               }
 
               // Add click handler to show progress bar
+              // Use capture phase (true) to intercept clicks BEFORE native handlers
               btn.addEventListener('click', function(e) {
+                // CRITICAL: Prevent default behavior and stop propagation
+                // This prevents the native file dialog from opening
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+
                 // Change button text to "Downloading" with animated dots
                 if (btn._textElement) {
                   btn._textElement.textContent = 'Downloading';
@@ -610,18 +617,18 @@ function injectDebugScript() {
 
                   // Store reference to this button for progress updates
                   window.currentDownloadButton = btn;
-                  
+
                   // Track download attempt start time for timeout mechanism
                   window.downloadAttemptStartTime = Date.now();
-                  
+
                   // Notify main process that download attempt started (via console message)
                   console.log('QUIXEL_DOWNLOAD_ATTEMPT_START:' + window.downloadAttemptStartTime);
-                  
+
                   // Set up timeout - if no download starts within 10 seconds, trigger failure
                   if (window.downloadTimeoutId) {
                     clearTimeout(window.downloadTimeoutId);
                   }
-                  
+
                   window.downloadTimeoutId = setTimeout(() => {
                     // Check if download actually started (will be cleared by onDownloadProgress/onDownloadComplete)
                     if (window.currentDownloadButton === btn && window.downloadAttemptStartTime) {
@@ -635,15 +642,28 @@ function injectDebugScript() {
                             error: 'Download timeout: No download started. The server may be experiencing issues or the request was invalid.'
                           });
                         }
-                        
+
+                        // Reset button state
+                        if (btn._textElement) {
+                          btn._textElement.textContent = 'Import to Blender';
+                          btn._textElement.classList.remove('animated-dots');
+                        }
+
+                        // Remove progress bar
+                        const progressContainer = btn.querySelector('.quixel-linear-progress-container');
+                        if (progressContainer) {
+                          progressContainer.remove();
+                        }
+
                         // Reset tracking
                         window.downloadAttemptStartTime = null;
                         window.downloadTimeoutId = null;
+                        window.currentDownloadButton = null;
                       }
                     }
                   }, 10000); // 10 second timeout
                 }, 100);
-              });
+              }, true); // Use capture phase to run before native handlers
             }
           });
         }
@@ -661,9 +681,9 @@ function injectDebugScript() {
           const urlParams = new URLSearchParams(window.location.search);
           const assetId = urlParams.get('assetId');
           if (assetId) {
-            // Search immediately, then again after short delay for late-loading buttons
+            // Search immediately, then again after longer delay to ensure React has finished rendering
             findDownloadButton(true);
-            setTimeout(() => findDownloadButton(), 300);
+            setTimeout(() => findDownloadButton(), 500);
           }
         }
       });
@@ -703,7 +723,7 @@ function injectDebugScript() {
           if (shouldSearch) {
             findDownloadButton();
           }
-        }, 100);
+        }, 200); // Increased from 100ms to 200ms to reduce processing during rapid DOM changes
       });
 
       domObserver.observe(document.body, {
@@ -1266,6 +1286,17 @@ function saveImportToHistory(importData) {
 
 function sendImportRequestToBlender(assetPath) {
   try {
+    // ═══════════════════════════════════════════════════════════════
+    // 🔒 CRITICAL: Don't send import without instance ID!
+    // ═══════════════════════════════════════════════════════════════
+
+    if (!blenderInstanceId) {
+      console.error('❌ Quixel Portal: CANNOT send import request - no Blender instance ID!');
+      console.error('   This Electron was launched without --blender-instance argument.');
+      console.error('   Import request will NOT be sent to avoid importing to wrong Blender instance.');
+      return;
+    }
+
     const tmpDir = path.join(os.tmpdir(), 'quixel_portal');
     const requestFile = path.join(tmpDir, 'import_request.json');
 
@@ -1313,22 +1344,63 @@ function sendImportRequestToBlender(assetPath) {
       }
     }
 
-    // Write import request with thumbnail, name, and type
+    // Write import request with thumbnail, name, type, and Blender instance ID
     const requestData = {
       asset_path: assetPath,
       thumbnail: thumbnailPath,
       asset_name: assetName,
       asset_type: assetType,
+      blender_instance_id: blenderInstanceId, // Add instance ID to target specific Blender instance
       timestamp: Date.now()
     };
 
     fs.writeFileSync(requestFile, JSON.stringify(requestData, null, 2));
+
+    console.log(`📤 Quixel Portal: Sent import request to Blender instance ${blenderInstanceId || '(any)'}`);
 
     // Start watching for completion
     watchForImportCompletion(assetPath);
 
   } catch (error) {
     // Failed to send import request to Blender
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 💓 HEARTBEAT MONITORING - Check if Blender is still alive
+// ═══════════════════════════════════════════════════════════════
+
+function checkBlenderHeartbeat(instanceId) {
+  try {
+    const tmpDir = path.join(os.tmpdir(), 'quixel_portal');
+    const heartbeatFile = path.join(tmpDir, `heartbeat_${instanceId}.txt`);
+
+    // Check if heartbeat file exists
+    if (!fs.existsSync(heartbeatFile)) {
+      console.log('⚠️ Quixel Portal: Heartbeat file not found (might be in grace period)');
+      return;
+    }
+
+    // Read heartbeat file
+    const heartbeatData = JSON.parse(fs.readFileSync(heartbeatFile, 'utf8'));
+    const timestamp = heartbeatData.timestamp;
+    const currentTime = Date.now() / 1000;  // Convert to seconds
+    const age = currentTime - timestamp;
+
+    console.log(`💓 Quixel Portal: Heartbeat check - Blender last seen ${age.toFixed(0)} seconds ago`);
+
+    // If heartbeat is older than 90 seconds, Blender is dead
+    if (age > 90) {
+      console.log('⚠️ Quixel Portal: Heartbeat EXPIRED - Blender last seen ' + age.toFixed(0) + ' seconds ago');
+      console.log('🛑 Quixel Portal: Closing Electron (Blender instance closed)');
+
+      // Close Electron gracefully
+      app.quit();
+    }
+
+  } catch (error) {
+    console.log('⚠️ Quixel Portal: Failed to check heartbeat:', error.message);
+    // Don't close on error - might be temporary file lock or parse error
   }
 }
 
@@ -1376,6 +1448,8 @@ function watchForImportCompletion(assetPath) {
               }`
             );
           }
+
+          console.log(`✅ Quixel Portal: Import completed for '${completionData.asset_name}'`);
 
           clearInterval(checkInterval);
         }
@@ -1444,6 +1518,29 @@ function createWindow() {
     },
     icon: path.join(__dirname, 'assets', 'images', 'windows_icon.ico')
   });
+
+  // Set window title with instance ID for easy identification
+  if (blenderInstanceId) {
+    const shortId = blenderInstanceId.slice(-8);
+    mainWindow.setTitle(`Quixel Portal (${shortId})`);
+    console.log(`🪟 Quixel Portal: Window title set to "Quixel Portal (${shortId})"`);
+
+    // Offset window position based on instance ID hash to prevent perfect overlap
+    const hashCode = (str) => {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash = hash & hash; // Convert to 32bit integer
+      }
+      return Math.abs(hash);
+    };
+
+    const offset = hashCode(blenderInstanceId) % 5;
+    const baseX = 100;
+    const baseY = 100;
+    mainWindow.setPosition(baseX + (offset * 40), baseY + (offset * 40));
+    console.log(`🪟 Quixel Portal: Window position offset: ${offset * 40}px`);
+  }
 
   // Show window once it's ready
   mainWindow.once('ready-to-show', () => {
@@ -1621,6 +1718,113 @@ function createWindow() {
 
   // Load Quixel website with authentication check
   loadQuixelWithAuthCheck();
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🔒 CREATE LOCK FILE - Prevent multiple Electrons for same instance
+  // ═══════════════════════════════════════════════════════════════
+
+  if (blenderInstanceId) {
+    try {
+      const tmpDir = path.join(os.tmpdir(), 'quixel_portal');
+
+      // Create temp directory if it doesn't exist
+      if (!fs.existsSync(tmpDir)) {
+        fs.mkdirSync(tmpDir, { recursive: true });
+      }
+
+      const lockFile = path.join(tmpDir, `electron_lock_${blenderInstanceId}.txt`);
+
+      // Write lock file with PID and timestamp
+      const lockData = {
+        pid: process.pid,
+        instance_id: blenderInstanceId,
+        timestamp: Date.now()
+      };
+
+      fs.writeFileSync(lockFile, JSON.stringify(lockData, null, 2));
+      console.log(`🔒 Quixel Portal: Lock file created - ${lockFile}`);
+
+      // Delete lock file when Electron closes
+      app.on('before-quit', () => {
+        try {
+          if (fs.existsSync(lockFile)) {
+            fs.unlinkSync(lockFile);
+            console.log('🔓 Quixel Portal: Lock file deleted');
+          }
+        } catch (error) {
+          console.log('⚠️ Quixel Portal: Failed to delete lock file:', error.message);
+        }
+      });
+
+    } catch (error) {
+      console.log('⚠️ Quixel Portal: Failed to create lock file:', error.message);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 👁️ MONITOR FOR SHOW WINDOW SIGNAL
+  // ═══════════════════════════════════════════════════════════════
+
+  if (blenderInstanceId) {
+    console.log('👁️ Quixel Portal: Starting show window signal monitoring');
+
+    // Check for show window signal every 100ms for faster response
+    setInterval(() => {
+      try {
+        const tmpDir = path.join(os.tmpdir(), 'quixel_portal');
+        const signalFile = path.join(tmpDir, `show_window_${blenderInstanceId}.txt`);
+
+        if (fs.existsSync(signalFile)) {
+          console.log('👁️ Quixel Portal: Show window signal received!');
+
+          // Show and focus the window
+          if (mainWindow) {
+            if (!mainWindow.isVisible()) {
+              mainWindow.show();
+            }
+            if (mainWindow.isMinimized()) {
+              mainWindow.restore();
+            }
+            mainWindow.focus();
+            console.log('🪟 Quixel Portal: Window shown and focused');
+          }
+
+          // Delete the signal file
+          try {
+            fs.unlinkSync(signalFile);
+          } catch (error) {
+            // Failed to delete signal file, not critical
+          }
+        }
+      } catch (error) {
+        // Error checking signal file, not critical
+      }
+    }, 100);  // Check every 100ms for faster response
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 💓 START HEARTBEAT MONITORING
+  // ═══════════════════════════════════════════════════════════════
+
+  if (blenderInstanceId) {
+    console.log(`💓 Quixel Portal: Starting heartbeat monitoring for instance ${blenderInstanceId}`);
+
+    // Wait 45 seconds before starting checks (grace period for Blender to write first heartbeat)
+    setTimeout(() => {
+      console.log('💓 Quixel Portal: Heartbeat monitoring active (checking every 60 seconds)');
+
+      // Check heartbeat every 60 seconds
+      setInterval(() => {
+        checkBlenderHeartbeat(blenderInstanceId);
+      }, 60000);  // 60 seconds
+
+      // Do first check immediately after grace period
+      checkBlenderHeartbeat(blenderInstanceId);
+
+    }, 45000);  // 45 second grace period
+  } else {
+    console.log('⚠️ Quixel Portal: No instance ID - heartbeat monitoring disabled');
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // 🌐 NETWORK REQUEST INTERCEPTION - Detect API errors
