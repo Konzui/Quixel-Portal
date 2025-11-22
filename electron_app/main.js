@@ -2,6 +2,7 @@ const { app, BrowserWindow, BrowserView, ipcMain, Menu, session, dialog, shell, 
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const extractZip = require('extract-zip');
 
 let mainWindow;
 let browserView;
@@ -1740,6 +1741,25 @@ function createWindow() {
       fs.writeFileSync(lockFile, JSON.stringify(lockData, null, 2));
       console.log(`🔒 Quixel Portal: Lock file created - ${lockFile}`);
 
+      // Update lock file periodically to keep it fresh (prevents stale file detection)
+      const updateLockFile = () => {
+        try {
+          if (fs.existsSync(lockFile)) {
+            const lockData = {
+              pid: process.pid,
+              instance_id: blenderInstanceId,
+              timestamp: Date.now()
+            };
+            fs.writeFileSync(lockFile, JSON.stringify(lockData, null, 2));
+          }
+        } catch (error) {
+          // Failed to update lock file, not critical
+        }
+      };
+
+      // Update lock file every 30 seconds to keep it fresh
+      setInterval(updateLockFile, 30000);
+
       // Delete lock file when Electron closes
       app.on('before-quit', () => {
         try {
@@ -1773,16 +1793,44 @@ function createWindow() {
         if (fs.existsSync(signalFile)) {
           console.log('👁️ Quixel Portal: Show window signal received!');
 
-          // Show and focus the window
+          // Show and focus the window, ensuring it comes to foreground
           if (mainWindow) {
-            if (!mainWindow.isVisible()) {
-              mainWindow.show();
-            }
+            // Restore if minimized
             if (mainWindow.isMinimized()) {
               mainWindow.restore();
             }
-            mainWindow.focus();
-            console.log('🪟 Quixel Portal: Window shown and focused');
+            
+            // Show if hidden
+            if (!mainWindow.isVisible()) {
+              mainWindow.show();
+            }
+            
+            // Force window to foreground on Windows
+            if (process.platform === 'win32') {
+              // Temporarily set always on top to force window to foreground
+              const wasAlwaysOnTop = mainWindow.isAlwaysOnTop();
+              if (!wasAlwaysOnTop) {
+                mainWindow.setAlwaysOnTop(true);
+              }
+              
+              // Focus the window
+              mainWindow.focus();
+              
+              // Restore always on top state after a brief moment
+              if (!wasAlwaysOnTop) {
+                setTimeout(() => {
+                  mainWindow.setAlwaysOnTop(false);
+                }, 100);
+              }
+            } else {
+              // On other platforms, just focus
+              mainWindow.focus();
+            }
+            
+            // Move window to front (additional method for ensuring foreground)
+            mainWindow.moveTop();
+            
+            console.log('🪟 Quixel Portal: Window restored, shown, and brought to foreground');
           }
 
           // Delete the signal file
@@ -2020,7 +2068,7 @@ function createWindow() {
             }
 
             // Use extract-zip for reliable extraction
-            const extractZip = require('extract-zip');
+            // extract-zip is required at top level, so it should be available here
 
             extractZip(fullPath, { dir: extractPath })
               .then(() => {

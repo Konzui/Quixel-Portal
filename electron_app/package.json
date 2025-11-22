@@ -31,10 +31,10 @@
     },
     "files": [
       "**/*",
-      "!node_modules/**/*",
       "!nul",
       "!**/nul"
     ],
+    "asar": false,
     "win": {
       "target": [
         {

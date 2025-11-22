@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(test:*)",
+      "Bash(npm run build-win:*)",
+      "Bash(cat:*)",
+      "Bash(python build.py:*)",
+      "Bash(python:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(wmic process where \"name like ''''%quixel%'''' or name like ''''%blender%''''\" get name,processid)"
     ],
     "deny": [],
     "ask": []
