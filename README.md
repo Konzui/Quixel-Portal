@@ -11,6 +11,8 @@ A Blender addon that opens Quixel Megascans in a dedicated Electron-based browse
 
 ## Project Structure
 
+1
+
 ```
 Quixel Portal/
 ├── __init__.py              # Blender addon main file
@@ -44,6 +46,7 @@ Quixel Portal/
 5. Enable the addon by checking the checkbox next to "Import-Export: Quixel Portal"
 
 **Alternative method (for development):**
+
 1. Copy the entire `Quixel Portal` folder to your Blender addons directory:
    - Windows: `%APPDATA%\Blender Foundation\Blender\4.2\scripts\addons\`
    - macOS: `~/Library/Application Support/Blender/4.2/scripts/addons/`
@@ -65,6 +68,7 @@ Quixel Portal/
 ### Persistent Sessions
 
 The Electron app uses a persistent partition (`persist:quixel`) which stores:
+
 - Cookies
 - Local storage
 - Session storage
@@ -114,20 +118,24 @@ Built files will be in `electron_app/build/`
 ## Troubleshooting
 
 ### "Electron app not found" error
+
 - Make sure you've installed npm dependencies in the `electron_app` directory
 - Verify the `electron_app` folder exists in the addon directory
 
 ### "npm install" fails
+
 - Ensure Node.js is installed (download from https://nodejs.org/)
 - Try running the command prompt as administrator
 - Clear npm cache: `npm cache clean --force`
 
 ### Addon doesn't appear in Blender
+
 - Make sure you're using Blender 4.2.1 LTS or compatible version
 - Check that the entire addon folder structure is intact
 - Look for error messages in Blender's console (Window > Toggle System Console)
 
 ### Electron app opens but shows blank screen
+
 - Check your internet connection
 - Try reloading the page manually (this can be added as a feature)
 - Check if quixel.com is accessible in a regular browser
@@ -146,6 +154,7 @@ MIT
 ## Future Enhancements
 
 Potential features for future versions:
+
 - Visual navigation toolbar within the Electron window
 - URL address bar for manual navigation
 - Bookmark functionality

@@ -597,13 +597,10 @@ function injectDebugScript() {
               }
 
               // Add click handler to show progress bar
-              // Use capture phase (true) to intercept clicks BEFORE native handlers
+              // Use bubble phase (false) to run AFTER Quixel's native handlers
               btn.addEventListener('click', function(e) {
-                // CRITICAL: Prevent default behavior and stop propagation
-                // This prevents the native file dialog from opening
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
+                // DO NOT prevent default - let Quixel's download handler run first!
+                // The will-download event will intercept the actual download
 
                 // Change button text to "Downloading" with animated dots
                 if (btn._textElement) {
@@ -663,7 +660,7 @@ function injectDebugScript() {
                     }
                   }, 10000); // 10 second timeout
                 }, 100);
-              }, true); // Use capture phase to run before native handlers
+              }, false); // Use bubble phase to run AFTER native handlers
             }
           });
         }
@@ -1287,14 +1284,13 @@ function saveImportToHistory(importData) {
 function sendImportRequestToBlender(assetPath) {
   try {
     // ═══════════════════════════════════════════════════════════════
-    // 🔒 CRITICAL: Don't send import without instance ID!
+    // 🔒 INSTANCE ID - Optional for single Blender instance setups
     // ═══════════════════════════════════════════════════════════════
 
     if (!blenderInstanceId) {
-      console.error('❌ Quixel Portal: CANNOT send import request - no Blender instance ID!');
-      console.error('   This Electron was launched without --blender-instance argument.');
-      console.error('   Import request will NOT be sent to avoid importing to wrong Blender instance.');
-      return;
+      console.warn('⚠️ Quixel Portal: No Blender instance ID provided');
+      console.warn('   Running in backward compatibility mode (single instance)');
+      console.warn('   Import request will be sent to any available Blender instance.');
     }
 
     const tmpDir = path.join(os.tmpdir(), 'quixel_portal');
