@@ -1,84 +1,1068 @@
 # Developer Guide
 
-This guide explains how to extend and modify the Quixel Portal addon.
+This guide explains how the Quixel Portal Blender addon works, how to navigate the codebase, and how to extend it with custom functionality.
 
-## Quick Start
+## Table of Contents
 
-### Understanding the Structure
+1. [Project Overview](#project-overview)
+2. [Project Structure](#project-structure)
+3. [Python-Electron Communication](#python-electron-communication)
+4. [Function Location Guide](#function-location-guide)
+5. [Extension Points](#extension-points)
+6. [Import Workflow Walkthrough](#import-workflow-walkthrough)
+7. [Code Examples](#code-examples)
 
-The addon is organized into layers:
+---
 
-1. **UI Layer** (`ui/`) - Blender operators (entry points)
-2. **Main Layer** (`main.py`) - Workflow orchestration
-3. **Operations Layer** (`operations/`) - Business logic
-4. **Communication Layer** (`communication/`) - Electron IPC
-5. **Utilities** (`utils/`) - Helper functions
+## Project Overview
 
-### Key Principle
+### What This Addon Does
 
-**You can modify or extend any layer without understanding the others!**
+The Quixel Portal addon integrates Quixel Megascans with Blender by:
+- Opening Quixel Portal in a dedicated Electron-based browser window
+- Maintaining persistent login sessions
+- Automatically importing downloaded assets into Blender
+- Organizing assets with proper materials, LODs, and variations
 
-- Want to add OBJ import? Work in `operations/` - no need to understand Electron communication
-- Want to change IPC protocol? Work in `communication/` - import logic stays the same
-- Want to add UI elements? Work in `ui/` - business logic stays the same
+### High-Level Architecture
 
-## Common Tasks
+The addon consists of two main components:
 
-### Adding a New Import Type (e.g., OBJ files)
+1. **Python Addon** (Blender side)
+   - Runs inside Blender
+   - Handles asset import and processing
+   - Communicates with Electron via file-based IPC
 
-**Step 1**: Create the importer module
+2. **Electron App** (Standalone application)
+   - Runs as a separate process
+   - Provides a browser window for Quixel Portal
+   - Detects downloads and sends import requests to Blender
 
-Create `operations/obj_importer.py`:
+### Communication Method
 
-```python
-"""OBJ importer module for importing OBJ files."""
+The two components communicate using **file-based IPC** (Inter-Process Communication):
+- Files are written to a temporary directory (`%TEMP%/quixel_portal/`)
+- Python polls for request files
+- Electron writes requests and reads completions
+- No direct process communication needed
 
-import bpy
-from pathlib import Path
+---
 
-def find_obj_files(asset_dir):
-    """Find all OBJ files in the asset directory."""
-    asset_dir = Path(asset_dir)
-    return list(asset_dir.glob("**/*.obj"))
+## Project Structure
 
-def import_obj_file(filepath, context):
-    """Import a single OBX file."""
-    # Your import logic here
-    pass
+### Directory Layout
+
+```
+Quixel Portal/
+├── __init__.py                 # Addon entry point and registration
+├── main.py                     # Main workflow orchestration
+├── communication/              # Electron IPC layer
+│   ├── electron_bridge.py     # Direct Electron communication
+│   └── file_watcher.py         # Import request polling
+├── operations/                  # Business logic layer
+│   ├── portal_launcher.py      # Launch Electron app
+│   ├── fbx_importer.py         # FBX file import
+│   ├── material_creator.py     # Material creation from textures
+│   ├── asset_processor.py      # Object organization and hierarchy
+│   └── name_corrector.py       # Object name correction
+├── utils/                       # Helper functions
+│   ├── naming.py               # Naming conventions and JSON parsing
+│   ├── texture_loader.py       # Texture loading utilities
+│   └── validation.py           # Path and asset validation
+├── ui/                          # Blender UI components
+│   └── operators.py            # Blender operators (UI entry points)
+└── electron_app/                # Electron application
+    ├── main.js                 # Electron main process
+    ├── preload.js              # Preload script for security
+    └── ...                     # Other Electron files
 ```
 
-**Step 2**: Update `main.py`
+### Module Responsibilities
 
-In `main.py`, add detection and import logic:
+#### `__init__.py` - Addon Registration
+**Purpose**: Entry point that Blender calls when loading the addon
+
+**What it does**:
+- Registers Blender operators (UI buttons/commands)
+- Adds button to Blender's topbar
+- Starts background timers (request watcher, heartbeat)
+- Loads custom icons
+
+**Key functions**:
+- `register()`: Called when addon is enabled
+- `unregister()`: Called when addon is disabled
+
+**When to modify**: Only when adding new UI operators or changing registration logic
+
+---
+
+#### `main.py` - Workflow Orchestration
+**Purpose**: High-level coordinator that orchestrates the entire import process
+
+**What it does**:
+- Receives import requests
+- Detects asset type (FBX vs surface material)
+- Coordinates between different operation modules
+- Manages the step-by-step import workflow
+
+**Key functions**:
+- `import_asset()`: Main entry point - starts the import process
+- `_import_fbx_asset()`: Handles FBX asset import workflow
+
+**Data flow**:
+```
+import_asset() 
+  → detect_asset_type() 
+  → _import_fbx_asset() 
+    → import FBX files
+    → correct names
+    → apply transforms
+    → organize by variation
+    → create materials
+    → create attach roots
+```
+
+**When to modify**: When changing the overall import workflow or adding new asset types
+
+---
+
+#### `communication/` - Electron IPC Layer
+
+##### `electron_bridge.py`
+**Purpose**: Direct communication with the Electron application
+
+**What it does**:
+- Manages instance IDs (unique ID per Blender session)
+- Launches Electron application
+- Writes heartbeat files (tells Electron that Blender is still running)
+- Reads import requests from Electron
+- Writes completion notifications to Electron
+
+**Key functions**:
+- `get_or_create_instance_id()`: Get unique ID for this Blender instance
+- `launch_electron_app()`: Launch Electron with instance ID
+- `write_heartbeat()`: Write heartbeat file every 30 seconds
+- `read_import_request()`: Read import request JSON file
+- `write_import_complete()`: Write completion notification
+
+**File locations**:
+- All IPC files: `%TEMP%/quixel_portal/`
+- Import request: `import_request.json`
+- Completion: `import_complete.json`
+- Heartbeat: `heartbeat_{instance_id}.txt`
+- Lock file: `electron_lock_{instance_id}.txt`
+
+**When to modify**: When changing IPC protocol or file formats
+
+---
+
+##### `file_watcher.py`
+**Purpose**: Monitors for import requests from Electron
+
+**What it does**:
+- Polls for import request files every 1 second
+- Validates requests (checks instance ID, timestamp)
+- Cleans up stale requests
+- Bridges requests to the main import function
+
+**Key functions**:
+- `check_import_requests()`: Timer function that polls for requests
+- `validate_request()`: Validates request data
+- `setup_request_watcher()`: Registers the polling timer
+
+**When to modify**: When changing polling interval or validation logic
+
+---
+
+#### `operations/` - Business Logic Layer
+
+##### `portal_launcher.py`
+**Purpose**: Launch and manage the Electron application
+
+**What it does**:
+- Handles debouncing (prevents rapid button clicks)
+- Checks if Electron is already running
+- Sends "show window" signals to existing instances
+- Launches new Electron instances when needed
+
+**Key functions**:
+- `open_quixel_portal()`: Main entry point for opening portal
+
+**When to modify**: When changing launch behavior or window management
+
+---
+
+##### `fbx_importer.py`
+**Purpose**: Import FBX files into Blender
+
+**What it does**:
+- Finds all FBX files in asset directories
+- Imports FBX files using Blender's built-in importer
+- Groups imported objects by base name
+- Applies transforms (scale and rotation) to objects
+
+**Key functions**:
+- `find_fbx_files()`: Discovers FBX files recursively
+- `import_fbx_file()`: Imports a single FBX file
+- `group_imported_objects()`: Groups objects by base name
+- `apply_transforms()`: Bakes scale/rotation into mesh geometry
+
+**When to modify**: When changing FBX import behavior or adding new import types
+
+---
+
+##### `material_creator.py`
+**Purpose**: Create materials from texture files
+
+**What it does**:
+- Finds textures for each variation and LOD
+- Creates Blender materials with proper node setup
+- Identifies texture types from filenames
+- Optimizes material reuse (hash-based caching)
+- Handles surface materials (textures only, no FBX)
+
+**Key functions**:
+- `create_material_from_textures()`: Creates a material from texture paths
+- `find_textures_for_variation()`: Finds textures for a specific variation
+- `create_surface_material()`: Creates material for surface-only assets
+- `create_materials_for_all_variations()`: Creates materials with caching
+
+**Texture types supported**:
+- Albedo/Diffuse/Color
+- Roughness
+- Normal
+- Metallic/Metalness
+- Opacity/Alpha/Mask
+- Displacement/Height
+
+**When to modify**: When adding new texture types or material node setups
+
+---
+
+##### `asset_processor.py`
+**Purpose**: Organize and process imported assets
+
+**What it does**:
+- Detects asset type (FBX vs surface material)
+- Organizes objects by variation (groups objects with same base name)
+- Calculates bounding boxes for variations
+- Creates attach root hierarchy (empty objects that parent variations)
+- Cleans up temporary materials
+
+**Key functions**:
+- `detect_asset_type()`: Determines if asset is FBX or surface material
+- `organize_objects_by_variation()`: Groups objects by variation suffix
+- `calculate_variation_bbox()`: Calculates bounding box for a variation
+- `create_asset_hierarchy()`: Creates attach roots with proper spacing
+- `cleanup_unused_materials()`: Removes temporary materials
+
+**When to modify**: When changing object organization, attach root logic, or spacing
+
+---
+
+##### `name_corrector.py`
+**Purpose**: Fix incorrect object names after FBX import
+
+**What it does**:
+- Matches imported objects to their source FBX files
+- Detects canonical base name from correctly named objects
+- Renames objects to follow naming convention
+- Validates LOD completeness
+
+**Key functions**:
+- `correct_object_names()`: Main function that corrects all object names
+- `find_canonical_base_name()`: Finds the correct base name
+- `match_objects_to_fbx()`: Matches objects to FBX files
+- `rename_objects_to_match()`: Renames objects to expected names
+
+**When to modify**: When changing naming conventions or name correction logic
+
+---
+
+#### `utils/` - Helper Functions
+
+##### `naming.py`
+**Purpose**: Naming conventions and JSON parsing
+
+**What it does**:
+- Extracts asset names from JSON metadata files
+- Detects variation numbers from object names
+- Converts numeric indices to letter suffixes (0→a, 1→b, 26→aa, etc.)
+- Parses JSON files for metadata
+
+**Key functions**:
+- `get_name_from_json()`: Extracts asset name from JSON
+- `detect_variation_number()`: Detects variation from object name
+- `index_to_letter_suffix()`: Converts index to letter suffix
+- `get_base_name()`: Removes LOD suffix from name
+
+**When to modify**: When changing naming conventions or JSON parsing
+
+---
+
+##### `texture_loader.py`
+**Purpose**: Texture loading utilities
+
+**What it does**:
+- Finds texture files in directories
+- Identifies texture types from filenames
+- Creates image texture nodes in Blender materials
+
+**Key functions**:
+- `load_texture()`: Creates an image texture node in a material
+- `find_texture_files()`: Discovers texture files recursively
+- `identify_texture_type()`: Identifies texture type from filename
+
+**When to modify**: When adding new texture types or changing texture loading
+
+---
+
+##### `validation.py`
+**Purpose**: Path and asset validation
+
+**What it does**:
+- Validates that file paths exist
+- Validates asset directory structure
+- Detects asset types
+
+**Key functions**:
+- `validate_path()`: Checks if a path exists
+- `validate_asset_directory()`: Validates asset structure and type
+
+**When to modify**: When changing validation rules
+
+---
+
+#### `ui/` - User Interface
+
+##### `operators.py`
+**Purpose**: Blender operators (UI entry points)
+
+**What it does**:
+- Provides Blender operator classes (UI buttons/commands)
+- Calls main.py functions
+- Handles user-facing errors
+
+**Key classes**:
+- `QUIXEL_OT_open_portal`: Opens Quixel Portal
+- `QUIXEL_OT_import_fbx`: Imports an asset manually
+- `QUIXEL_OT_cleanup_requests`: Cleans up stuck requests
+
+**When to modify**: When adding new UI operators or changing user-facing behavior
+
+---
+
+## Python-Electron Communication
+
+### How It Works
+
+The Python addon and Electron app communicate using **file-based IPC** - they write and read JSON files in a temporary directory.
+
+### Communication Flow
+
+```
+┌─────────────────┐                    ┌──────────────────┐
+│  Electron App   │                    │  Python Addon    │
+│                 │                    │                  │
+│  1. User clicks │                    │                  │
+│     download    │                    │                  │
+│                 │                    │                  │
+│  2. Write       │ ────(file)──────> │  3. Poll every   │
+│     import_     │                    │     1 second     │
+│     request.json│                    │                  │
+│                 │                    │  4. Read &       │
+│                 │                    │     validate     │
+│                 │                    │                  │
+│                 │                    │  5. Import asset │
+│                 │                    │                  │
+│  6. Read        │ <────(file)─────── │  7. Write        │
+│     import_     │                    │     import_      │
+│     complete.json│                    │     complete.json │
+│                 │                    │                  │
+│  8. Show        │                    │                  │
+│     notification│                    │                  │
+└─────────────────┘                    ┌──────────────────┘
+```
+
+### File Locations
+
+All IPC files are stored in: `%TEMP%/quixel_portal/`
+
+**Windows**: `C:\Users\<username>\AppData\Local\Temp\quixel_portal\`
+**Linux/Mac**: `/tmp/quixel_portal/`
+
+### File Formats
+
+#### Import Request (`import_request.json`)
+
+Written by Electron when user downloads an asset:
+
+```json
+{
+  "asset_path": "C:/Users/.../Downloads/asset_folder",
+  "thumbnail": "C:/Users/.../Downloads/asset_folder/thumbnail.jpg",
+  "asset_name": "Rock_Asset_01",
+  "asset_type": "3d",
+  "blender_instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": 1704067200000
+}
+```
+
+**Fields**:
+- `asset_path`: Path to the downloaded asset directory
+- `thumbnail`: Path to thumbnail image (optional)
+- `asset_name`: Name of the asset
+- `asset_type`: Type of asset ("3d" or "surface")
+- `blender_instance_id`: UUID of the Blender instance that should handle this
+- `timestamp`: Unix timestamp in milliseconds
+
+#### Import Complete (`import_complete.json`)
+
+Written by Python when import finishes:
+
+```json
+{
+  "asset_path": "C:/Users/.../Downloads/asset_folder",
+  "asset_name": "Rock_Asset_01",
+  "thumbnail": "C:/Users/.../Downloads/asset_folder/thumbnail.jpg",
+  "timestamp": 1704067200000
+}
+```
+
+#### Heartbeat (`heartbeat_{instance_id}.txt`)
+
+Written by Python every 30 seconds to signal that Blender is still running:
+
+```json
+{
+  "timestamp": 1704067200,
+  "blender_pid": 12345,
+  "instance_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Electron reads this to know if Blender is still alive. If heartbeat stops, Electron can close.
+
+### Instance ID System
+
+Each Blender instance gets a **unique UUID** that:
+- Is generated when the addon first runs
+- Persists for the entire Blender session
+- Is passed to Electron when launching
+- Is used to match import requests to the correct Blender instance
+
+**Why this matters**: If you have multiple Blender windows open, each gets its own Electron window, and import requests are routed to the correct Blender instance.
+
+### Request Validation
+
+Before processing an import request, Python validates:
+1. **Instance ID match**: Request must be for THIS Blender instance
+2. **Timestamp check**: Request must be less than 30 seconds old
+3. **File existence**: Asset path must exist
+
+If validation fails, the request is ignored or deleted.
+
+### Polling System
+
+Python uses Blender's timer system to poll for requests:
+- Polls every **1 second** (configurable in `file_watcher.py`)
+- Timer runs in background, doesn't block Blender
+- Automatically stops when addon is disabled
+
+---
+
+## Function Location Guide
+
+### Where to Find Import Logic
+
+**Main entry point**: `main.py::import_asset()`
+- Detects asset type and routes to appropriate handler
+
+**FBX import**: `operations/fbx_importer.py`
+- `find_fbx_files()`: Find FBX files
+- `import_fbx_file()`: Import single FBX
+- `group_imported_objects()`: Group by base name
+- `apply_transforms()`: Apply scale/rotation
+
+**Surface material import**: `operations/material_creator.py::create_surface_material()`
+- Creates material from JSON + textures (no FBX)
+
+---
+
+### Where to Find Material Creation
+
+**Main material creation**: `operations/material_creator.py`
+- `create_material_from_textures()`: Creates a material from texture paths
+- `create_materials_for_all_variations()`: Creates materials for all variations with caching
+- `find_textures_for_variation()`: Finds textures for a specific variation
+
+**Texture type identification**: `utils/texture_loader.py::identify_texture_type()`
+- Identifies texture type from filename (albedo, roughness, normal, etc.)
+
+**Texture loading**: `utils/texture_loader.py::load_texture()`
+- Creates image texture node in Blender material
+
+---
+
+### Where to Find Object Organization
+
+**Variation grouping**: `operations/asset_processor.py::organize_objects_by_variation()`
+- Groups objects by variation suffix (a, b, c, etc.)
+
+**Name correction**: `operations/name_corrector.py::correct_object_names()`
+- Corrects object names to match naming convention
+
+**Base name extraction**: `utils/naming.py::get_base_name()`
+- Extracts base name from object name (removes LOD suffix)
+
+**Variation detection**: `utils/naming.py::detect_variation_number()`
+- Detects variation number from object name
+
+---
+
+### Where to Find Naming Utilities
+
+**All naming functions**: `utils/naming.py`
+- `get_name_from_json()`: Extract name from JSON metadata
+- `detect_variation_number()`: Detect variation from object name
+- `index_to_letter_suffix()`: Convert index to letter (0→a, 1→b, etc.)
+- `get_base_name()`: Remove LOD suffix from name
+
+**Name correction**: `operations/name_corrector.py`
+- `correct_object_names()`: Main name correction function
+- `find_canonical_base_name()`: Find correct base name
+- `rename_objects_to_match()`: Rename objects to expected names
+
+---
+
+### Where to Find Validation
+
+**Path validation**: `utils/validation.py::validate_path()`
+- Checks if a path exists
+
+**Asset validation**: `utils/validation.py::validate_asset_directory()`
+- Validates asset directory structure
+- Detects asset type (FBX vs surface)
+
+**Request validation**: `communication/file_watcher.py::validate_request()`
+- Validates import requests (instance ID, timestamp)
+
+---
+
+## Extension Points
+
+### Custom Attach Roots Logic
+
+#### Current Implementation
+
+Attach roots are created in: `operations/asset_processor.py::create_asset_hierarchy()`
+
+**What it does**:
+1. Calculates bounding boxes for all variations
+2. Creates empty objects (attach roots) for each variation
+3. Positions attach roots with 1-meter spacing between variations
+4. Parents all variation objects to their attach root
+
+**Current spacing logic**:
+```python
+current_x_offset = 0.0
+margin = 1.0  # Fixed 1 meter margin
+
+for variation_suffix in sorted(variations.keys()):
+    # Create attach root at current_x_offset
+    attach_root.location.x = current_x_offset
+    
+    # Parent objects to attach root
+    for obj in variation_objects:
+        obj.parent = attach_root
+    
+    # Move to next position
+    current_x_offset += bbox['width'] + margin
+```
+
+#### How to Modify Spacing
+
+**Location**: `operations/asset_processor.py::create_asset_hierarchy()`
+
+**Example: Change margin to 2 meters**:
+```python
+# Line ~170 in create_asset_hierarchy()
+margin = 2.0  # Changed from 1.0 to 2.0
+```
+
+**Example: Use percentage-based spacing**:
+```python
+# Replace fixed margin with percentage
+margin_percent = 0.5  # 50% of width
+current_x_offset += bbox['width'] * (1 + margin_percent)
+```
+
+#### How to Modify Positioning
+
+**Current**: Variations are spaced along X-axis only
+
+**Example: Stack vertically instead**:
+```python
+# In create_asset_hierarchy(), change:
+attach_root.location.x = 0.0
+attach_root.location.y = current_y_offset  # Use Y instead of X
+attach_root.location.z = 0.0
+
+# Update offset
+current_y_offset += bbox['height'] + margin
+```
+
+**Example: Arrange in grid**:
+```python
+# Arrange in 2x2 grid
+grid_cols = 2
+col = len(created_attach_roots) % grid_cols
+row = len(created_attach_roots) // grid_cols
+
+attach_root.location.x = col * (max_width + margin)
+attach_root.location.y = row * (max_height + margin)
+attach_root.location.z = 0.0
+```
+
+#### How to Modify Naming
+
+**Location**: `operations/asset_processor.py::create_asset_hierarchy()`
+
+**Current naming**: `{attach_root_base_name}_{variation_suffix}`
+
+**Example: Add LOD to name**:
+```python
+# Get LOD from first object in variation
+first_obj = variation_objects[0]
+lod_level = extract_lod_from_name(first_obj.name)  # You'd need to implement this
+
+attach_root_name = f"{attach_root_base_name}_{variation_suffix}_LOD{lod_level}"
+```
+
+**Example: Use custom naming scheme**:
+```python
+# Custom naming: "Root_VariationA", "Root_VariationB"
+attach_root_name = f"Root_Variation{variation_suffix.upper()}"
+```
+
+#### How to Add Custom Properties to Attach Roots
+
+**Location**: `operations/asset_processor.py::create_asset_hierarchy()`
+
+**Example: Add LOD level as custom property**:
+```python
+# After creating attach_root
+attach_root["lod_level"] = lod_level  # Store as custom property
+attach_root["variation_index"] = variation_index
+attach_root["asset_name"] = attach_root_base_name
+```
+
+**Example: Add bounding box data**:
+```python
+# Store bounding box in custom properties
+attach_root["bbox_width"] = bbox['width']
+attach_root["bbox_height"] = bbox['height']
+attach_root["bbox_depth"] = bbox['depth']
+```
+
+**Accessing custom properties later**:
+```python
+# In Blender Python console or another script
+lod = attach_root.get("lod_level")
+variation = attach_root.get("variation_index")
+```
+
+---
+
+### Custom Material Types
+
+#### Current Implementation
+
+Materials are created in: `operations/material_creator.py::create_material_from_textures()`
+
+**Current texture types**:
+- Albedo/Diffuse/Color → Base Color input
+- Roughness → Roughness input
+- Normal → Normal Map node → Normal input
+- Metallic → Metallic input
+- Opacity/Alpha/Mask → Alpha input + Blend mode
+
+**Texture type identification**: `utils/texture_loader.py::identify_texture_type()`
+
+#### How to Add a New Texture Type
+
+**Step 1: Add texture identification**
+
+**Location**: `utils/texture_loader.py::identify_texture_type()`
 
 ```python
-from .operations.obj_importer import find_obj_files, import_obj_file
+def identify_texture_type(filename):
+    filename_lower = str(filename).lower()
+    
+    # ... existing checks ...
+    
+    # Add new texture type
+    elif 'emission' in filename_lower or 'emissive' in filename_lower:
+        return 'emission'
+    elif 'ao' in filename_lower or 'ambient_occlusion' in filename_lower:
+        return 'ao'
+    
+    return None
+```
 
-def import_asset(asset_path, thumbnail_path=None, asset_name=None):
+**Step 2: Add material node setup**
+
+**Location**: `operations/material_creator.py::create_material_from_textures()`
+
+```python
+def create_material_from_textures(material_name, textures, context):
     # ... existing code ...
     
-    # Detect asset type
-    asset_type = detect_asset_type(asset_dir)
+    # Add Emission texture
+if 'emission' in textures and textures['emission']:
+    emission_node = load_texture(nodes, 'Emission', textures['emission'], 'sRGB')
+    if emission_node:
+        links.new(emission_node.outputs['Color'], bsdf.inputs['Emission'])
+            # Set emission strength
+            bsdf.inputs['Emission Strength'].default_value = 1.0
     
-    if asset_type == 'obj':  # Add this
-        return _import_obj_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name)
-    elif asset_type == 'surface':
-        # ... existing code ...
+    # Add Ambient Occlusion (multiply with base color)
+    if 'ao' in textures and textures['ao']:
+        ao_node = load_texture(nodes, 'AO', textures['ao'], 'Non-Color')
+        if ao_node:
+            # Create multiply node
+            multiply_node = nodes.new(type='ShaderNodeMixRGB')
+            multiply_node.blend_type = 'MULTIPLY'
+            multiply_node.location = (-400, -200)
+            
+            # Connect: AO → Multiply → Base Color
+            links.new(ao_node.outputs['Color'], multiply_node.inputs['Color2'])
+            # Get existing base color connection
+            if 'albedo' in textures and textures['albedo']:
+                albedo_node = nodes.get('Albedo')
+                if albedo_node:
+                    links.new(albedo_node.outputs['Color'], multiply_node.inputs['Color1'])
+                    links.new(multiply_node.outputs['Color'], bsdf.inputs['Base Color'])
+    
+    # ... rest of existing code ...
 ```
 
-**Step 3**: Implement the import function
+**Step 3: Add to texture types list**
 
-Add `_import_obj_asset()` function following the same pattern as `_import_fbx_asset()`.
+**Location**: `operations/material_creator.py::find_textures_for_variation()`
 
-**That's it!** No need to touch communication or UI layers.
+```python
+# Line ~191, add to texture_types list
+texture_types = ['albedo', 'roughness', 'normal', 'metallic', 'opacity', 'emission', 'ao']
+```
 
-### Modifying Material Creation
+**Step 4: Add to hash calculation** (for material caching)
 
-**Example**: Add support for a new texture type (e.g., "emission")
+**Location**: `operations/material_creator.py::get_texture_hash()`
 
-**Step 1**: Update texture identification
+```python
+# Line ~94, add to texture_types list
+texture_types = ['albedo', 'roughness', 'normal', 'metallic', 'opacity', 'emission', 'ao']
+```
 
-In `utils/texture_loader.py`, add to `identify_texture_type()`:
+#### How to Add Custom Material Nodes
+
+**Example: Add displacement mapping**:
+
+```python
+# In create_material_from_textures()
+if 'displacement' in textures and textures['displacement']:
+    displacement_node = load_texture(nodes, 'Displacement', textures['displacement'], 'Non-Color')
+    if displacement_node:
+        # Create displacement node
+        displacement_shader = nodes.new(type='ShaderNodeDisplacement')
+        displacement_shader.location = (-200, -600)
+        
+        # Connect displacement
+        links.new(displacement_node.outputs['Color'], displacement_shader.inputs['Height'])
+        
+        # Connect to material output
+        material_output = nodes.get('Material Output')
+        if material_output:
+            links.new(displacement_shader.outputs['Displacement'], material_output.inputs['Displacement'])
+```
+
+**Example: Add custom shader setup**:
+
+```python
+# Replace Principled BSDF with custom node setup
+# Remove default BSDF
+nodes.remove(bsdf)
+
+# Create custom nodes
+custom_shader = nodes.new(type='ShaderNodeBsdfPrincipled')
+# ... set up custom shader ...
+```
+
+---
+
+### Custom Attributes (LODs, etc.)
+
+#### Current LOD Handling
+
+LODs are currently:
+- **Extracted from filenames**: `operations/name_corrector.py::extract_lod_from_fbx()`
+- **Used in naming**: Objects named `{base}_{variation}_LOD{level}`
+- **Used in materials**: Materials named `{attach_root}_LOD{level}`
+- **NOT stored as custom properties**: LOD info is only in names
+
+#### How to Add LOD as Custom Property
+
+**Location**: Multiple places depending on when you want to add it
+
+**Option 1: Add during FBX import**
+
+**Location**: `operations/fbx_importer.py::import_fbx_file()`
+
+```python
+def import_fbx_file(filepath, context):
+    # ... existing import code ...
+    
+    # After importing objects
+    for obj in imported_objects:
+        if obj.type == 'MESH' and obj.data:
+            # Extract LOD from filename
+            lod_level = extract_lod_from_fbx(filepath)
+            
+            # Add as custom property
+            obj["lod_level"] = lod_level[0]  # lod_level is tuple (level, has_lod)
+            obj["source_fbx"] = str(filepath)
+    
+    return imported_objects, base_name
+```
+
+**Option 2: Add during name correction**
+
+**Location**: `operations/name_corrector.py::rename_objects_to_match()`
+
+```python
+def rename_objects_to_match(objects, fbx_mapping):
+    # ... existing code ...
+    
+    for obj in objects:
+        # ... existing renaming code ...
+        
+        # Add custom properties
+        mapping = fbx_mapping[obj]
+        obj["lod_level"] = mapping['lod_level']
+        obj["variation_index"] = variation_index
+        obj["base_name"] = expected_base
+```
+
+**Option 3: Add during attach root creation**
+
+**Location**: `operations/asset_processor.py::create_asset_hierarchy()`
+
+```python
+def create_asset_hierarchy(variations, attach_root_base_name, context):
+    # ... existing code ...
+    
+    for variation_suffix in sorted(variations.keys()):
+        variation_objects = variations[variation_suffix]
+        
+        # Add custom properties to attach root
+        attach_root["variation_suffix"] = variation_suffix
+        attach_root["variation_count"] = len(variation_objects)
+        
+        # Add custom properties to objects
+        for obj in variation_objects:
+            if obj.type == 'MESH' and obj.data:
+                # Extract LOD from object name
+                lod_match = re.search(r'_?LOD(\d+)', obj.name, re.IGNORECASE)
+                if lod_match:
+                    obj["lod_level"] = lod_match.group(1)
+                
+                obj["variation_suffix"] = variation_suffix
+                obj["attach_root"] = attach_root_name
+```
+
+#### How to Add Other Custom Attributes
+
+**Example: Add asset metadata from JSON**:
+
+**Location**: `main.py::_import_fbx_asset()` or `operations/asset_processor.py::create_asset_hierarchy()`
+
+```python
+# In create_asset_hierarchy() or similar
+from ..utils.naming import get_name_from_json
+
+# Get JSON data
+json_name, json_file = get_name_from_json(asset_dir)
+if json_file:
+    import json
+    with open(json_file, 'r') as f:
+        json_data = json.load(f)
+    
+    # Add metadata to attach root
+    attach_root["asset_id"] = json_data.get('id', '')
+    attach_root["asset_category"] = json_data.get('category', '')
+    attach_root["asset_tags"] = str(json_data.get('tags', []))
+```
+
+**Example: Add bounding box data**:
+
+```python
+# In create_asset_hierarchy(), after calculating bbox
+for obj in variation_objects:
+    if obj.type == 'MESH' and obj.data:
+        # Calculate object bbox
+        obj_bbox = calculate_object_bbox(obj)  # You'd need to implement this
+        
+        obj["bbox_min_x"] = obj_bbox['min_x']
+        obj["bbox_max_x"] = obj_bbox['max_x']
+        obj["bbox_width"] = obj_bbox['width']
+        # ... etc
+```
+
+**Example: Add import metadata**:
+
+```python
+# In main.py::_import_fbx_asset()
+import time
+
+# After successful import
+for attach_root in created_attach_roots:
+    attach_root["import_timestamp"] = time.time()
+    attach_root["import_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    attach_root["blender_version"] = bpy.app.version_string
+```
+
+#### Accessing Custom Properties
+
+**In Blender Python console**:
+```python
+import bpy
+
+# Get object
+obj = bpy.data.objects["MyObject"]
+
+# Read custom property
+lod_level = obj.get("lod_level")
+variation = obj.get("variation_suffix")
+
+# Check if property exists
+if "lod_level" in obj:
+    print(f"LOD Level: {obj['lod_level']}")
+```
+
+**In another script**:
+```python
+# Iterate all objects with LOD property
+for obj in bpy.data.objects:
+    if "lod_level" in obj:
+        print(f"{obj.name}: LOD {obj['lod_level']}")
+```
+
+---
+
+## Import Workflow Walkthrough
+
+### Complete Import Process
+
+Here's the step-by-step flow when an asset is imported:
+
+#### Step 1: Request Detection
+**Location**: `communication/file_watcher.py::check_import_requests()`
+
+1. Timer runs every 1 second
+2. Checks for `import_request.json` in temp directory
+3. Validates request (instance ID, timestamp)
+4. If valid, deletes request file and calls `main.py::import_asset()`
+
+#### Step 2: Asset Type Detection
+**Location**: `main.py::import_asset()`
+
+1. Calls `operations/asset_processor.py::detect_asset_type()`
+2. Determines if asset is:
+   - **FBX**: Contains `.fbx` files
+   - **Surface**: Contains JSON + textures (no FBX)
+3. Routes to appropriate handler
+
+#### Step 3: FBX Import (if FBX asset)
+**Location**: `main.py::_import_fbx_asset()`
+
+**3.1: Import FBX Files**
+- `operations/fbx_importer.py::find_fbx_files()`: Find all FBX files
+- `operations/fbx_importer.py::import_fbx_file()`: Import each FBX
+- Groups imported objects by base name
+
+**3.2: Correct Object Names**
+- `operations/name_corrector.py::correct_object_names()`:
+  - Finds canonical base name
+  - Matches objects to FBX files
+  - Renames objects to match naming convention
+
+**3.3: Remove Old World Roots**
+- Detects empty parent objects from FBX import
+- Extracts rotation and scale from old roots
+- Removes old roots and reparents children
+
+**3.4: Set Transforms**
+- Sets detected rotation and scale on all objects
+- `operations/fbx_importer.py::apply_transforms()`: Bakes transforms into mesh
+
+**3.5: Organize by Variation**
+- `operations/asset_processor.py::organize_objects_by_variation()`:
+  - Groups objects by variation suffix (a, b, c, etc.)
+  - Converts numeric indices to letter suffixes
+
+**3.6: Create Materials**
+- `operations/material_creator.py::create_materials_for_all_variations()`:
+  - Finds textures for each variation and LOD
+  - Creates materials with hash-based caching
+  - Assigns materials to objects
+
+**3.7: Create Attach Roots**
+- `operations/asset_processor.py::create_asset_hierarchy()`:
+  - Calculates bounding boxes
+  - Creates attach roots with spacing
+  - Parents variation objects to attach roots
+
+**3.8: Cleanup**
+- `operations/asset_processor.py::cleanup_unused_materials()`:
+  - Removes temporary materials from FBX import
+
+#### Step 4: Surface Material (if surface asset)
+**Location**: `main.py::import_asset()`
+
+1. `operations/material_creator.py::create_surface_material()`:
+   - Finds JSON file
+   - Finds texture files
+   - Creates material
+   - Assigns to selected objects (if any)
+
+#### Step 5: Completion Notification
+**Location**: `main.py::import_asset()`
+
+1. `communication/electron_bridge.py::write_import_complete()`:
+   - Writes `import_complete.json` to temp directory
+   - Electron reads this and shows notification
+
+### Critical Order of Operations
+
+**IMPORTANT**: The order matters! Here's why:
+
+1. **Import FBX first**: Objects must exist before processing
+2. **Correct names before grouping**: Grouping relies on correct base names
+3. **Remove old roots before setting transforms**: Old roots have the correct transforms
+4. **Set transforms before applying**: Must set correct values before baking
+5. **Apply transforms before parenting**: Transforms must be baked before parenting
+6. **Organize by variation before materials**: Materials are assigned per variation
+7. **Create materials before attach roots**: Materials are named after attach roots
+8. **Calculate bbox before creating roots**: Spacing needs bbox data
+
+---
+
+## Code Examples
+
+### Example 1: Adding Emission Texture Type
+
+**Step 1**: Add to texture identification (`utils/texture_loader.py`):
 
 ```python
 def identify_texture_type(filename):
@@ -92,247 +1076,158 @@ def identify_texture_type(filename):
     return None
 ```
 
-**Step 2**: Update material creation
-
-In `operations/material_creator.py`, add to `create_material_from_textures()`:
+**Step 2**: Add to material creation (`operations/material_creator.py`):
 
 ```python
-# Load Emission texture
-if 'emission' in textures and textures['emission']:
-    emission_node = load_texture(nodes, 'Emission', textures['emission'], 'sRGB')
-    if emission_node:
-        links.new(emission_node.outputs['Color'], bsdf.inputs['Emission'])
-```
-
-**Step 3**: Update texture finding
-
-In `operations/material_creator.py`, add 'emission' to texture types list in `find_textures_for_variation()`.
-
-### Changing Communication Protocol
-
-**Example**: Change polling interval from 1 second to 0.5 seconds
-
-**Location**: `communication/file_watcher.py`
-
-```python
-def check_import_requests():
+def create_material_from_textures(material_name, textures, context):
     # ... existing code ...
     
-    # Change this line:
-    return 1.0  # Check every 1 second
+    # Load Emission texture
+    if 'emission' in textures and textures['emission']:
+        emission_node = load_texture(nodes, 'Emission', textures['emission'], 'sRGB')
+        if emission_node:
+            links.new(emission_node.outputs['Color'], bsdf.inputs['Emission'])
+            bsdf.inputs['Emission Strength'].default_value = 1.0
     
-    # To:
-    return 0.5  # Check every 0.5 seconds
+    # ... rest of code ...
 ```
 
-**That's it!** No other modules need to change.
-
-### Adding New Utility Functions
-
-**Example**: Add a function to calculate object bounding box
-
-**Location**: `utils/validation.py` or create new `utils/geometry.py`
+**Step 3**: Add to texture types list (`operations/material_creator.py::find_textures_for_variation()`):
 
 ```python
-def calculate_object_bbox(obj):
-    """Calculate bounding box of a single object."""
-    # Your implementation
-    pass
+texture_types = ['albedo', 'roughness', 'normal', 'metallic', 'opacity', 'emission']
 ```
 
-Then import and use in any operation module:
+**Step 4**: Add to hash calculation (`operations/material_creator.py::get_texture_hash()`):
 
 ```python
-from ..utils.validation import calculate_object_bbox  # or utils.geometry
+texture_types = ['albedo', 'roughness', 'normal', 'metallic', 'opacity', 'emission']
 ```
 
-### Modifying UI
+---
 
-**Example**: Add a new operator for manual import
+### Example 2: Modifying Attach Root Spacing
 
-**Location**: `ui/operators.py`
+**Change spacing to 2 meters** (`operations/asset_processor.py::create_asset_hierarchy()`):
 
 ```python
-class QUIXEL_OT_manual_import(bpy.types.Operator):
-    """Manually import an asset from file browser"""
-    bl_idname = "quixel.manual_import"
-    bl_label = "Manual Import"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
-    
-    def execute(self, context):
-        from ..main import import_asset
-        return import_asset(self.filepath)
-    
-    def invoke(self, context, event):
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+# Line ~170
+margin = 2.0  # Changed from 1.0
 ```
 
-Then register in `__init__.py`:
+**Use percentage-based spacing**:
 
 ```python
-from ui.operators import QUIXEL_OT_manual_import
+# Replace fixed margin
+margin_percent = 0.5  # 50% of width
+current_x_offset += bbox['width'] * (1 + margin_percent)
+```
 
-def register():
+**Stack vertically instead of horizontally**:
+
+```python
+# Change from X-axis to Y-axis
+current_y_offset = 0.0
+margin = 1.0
+
+for variation_suffix in sorted(variations.keys()):
+    # ... create attach root ...
+    
+    attach_root.location.x = 0.0
+    attach_root.location.y = current_y_offset  # Y instead of X
+    attach_root.location.z = 0.0
+    
+    # ... parent objects ...
+    
+    current_y_offset += bbox['height'] + margin  # Height instead of width
+```
+
+---
+
+### Example 3: Adding LOD as Custom Property
+
+**Add during name correction** (`operations/name_corrector.py::rename_objects_to_match()`):
+
+```python
+def rename_objects_to_match(objects, fbx_mapping):
     # ... existing code ...
-    bpy.utils.register_class(QUIXEL_OT_manual_import)
+    
+    for obj in objects:
+        # ... existing renaming code ...
+        
+        # Add custom properties
+        mapping = fbx_mapping[obj]
+        obj["lod_level"] = mapping['lod_level']
+        obj["variation_index"] = variation_index
+        obj["base_name"] = expected_base
+        obj["source_fbx"] = str(mapping['fbx_file'])
 ```
 
-## Module Interaction Patterns
-
-### Calling Operations from Main
+**Add during attach root creation** (`operations/asset_processor.py::create_asset_hierarchy()`):
 
 ```python
-# In main.py
-from .operations.fbx_importer import import_fbx_file
-
-result = import_fbx_file(filepath, context)
+def create_asset_hierarchy(variations, attach_root_base_name, context):
+    # ... existing code ...
+    
+    for variation_suffix in sorted(variations.keys()):
+        variation_objects = variations[variation_suffix]
+        
+        # Add to attach root
+        attach_root["variation_suffix"] = variation_suffix
+        attach_root["object_count"] = len(variation_objects)
+        
+        # Add to objects
+        for obj in variation_objects:
+            if obj.type == 'MESH' and obj.data:
+                # Extract LOD from name
+                import re
+                lod_match = re.search(r'_?LOD(\d+)', obj.name, re.IGNORECASE)
+                if lod_match:
+                    obj["lod_level"] = lod_match.group(1)
+                
+                obj["variation_suffix"] = variation_suffix
 ```
 
-### Calling Utilities from Operations
+---
+
+### Example 4: Adding Custom Material Node Setup
+
+**Add displacement mapping** (`operations/material_creator.py::create_material_from_textures()`):
 
 ```python
-# In operations/material_creator.py
-from ..utils.texture_loader import load_texture
-
-texture_node = load_texture(nodes, 'Albedo', texture_path)
+def create_material_from_textures(material_name, textures, context):
+    # ... existing code ...
+    
+    # Add Displacement
+    if 'displacement' in textures and textures['displacement']:
+        displacement_node = load_texture(nodes, 'Displacement', textures['displacement'], 'Non-Color')
+        if displacement_node:
+            # Create displacement shader node
+            displacement_shader = nodes.new(type='ShaderNodeDisplacement')
+            displacement_shader.location = (-200, -600)
+            displacement_shader.inputs['Scale'].default_value = 0.1
+            
+            # Connect displacement
+            links.new(displacement_node.outputs['Color'], displacement_shader.inputs['Height'])
+            
+            # Connect to material output
+            material_output = nodes.get('Material Output')
+            if material_output:
+                links.new(displacement_shader.outputs['Displacement'], material_output.inputs['Displacement'])
 ```
 
-### Calling Communication from Operations
+---
 
-```python
-# In operations/portal_launcher.py
-from ..communication.electron_bridge import launch_electron_app
+## Summary
 
-success, error = launch_electron_app(instance_id)
-```
+This guide has covered:
+- **Project structure**: Where everything is located
+- **Communication**: How Python and Electron talk to each other
+- **Function locations**: Where to find specific functionality
+- **Extension points**: How to customize attach roots, materials, and attributes
+- **Workflow**: Step-by-step import process
+- **Examples**: Practical code examples for common tasks
 
-### Calling Main from UI
+For more details on architecture, see `ARCHITECTURE.md`.
 
-```python
-# In ui/operators.py
-from ..main import import_asset
-
-result = import_asset(asset_path, thumbnail_path, asset_name)
-```
-
-## Best Practices
-
-### 1. Keep Functions Focused
-Each function should do one thing well. If a function is doing multiple things, split it.
-
-### 2. Use Type Hints (Optional but Recommended)
-```python
-def import_fbx_file(filepath: Path, context: bpy.types.Context) -> tuple[list, str | None]:
-    """Import a single FBX file."""
-    pass
-```
-
-### 3. Document Complex Logic
-Add comments for non-obvious code:
-
-```python
-# CRITICAL: Apply transforms BEFORE parenting
-# Bounding box calculations need correct transforms
-apply_transforms(objects)
-```
-
-### 4. Follow Existing Patterns
-When adding new functionality, follow the patterns used in similar modules:
-- Import structure
-- Error handling style
-- Logging format
-- Function naming
-
-### 5. Test Incrementally
-After making changes:
-1. Test the specific functionality you modified
-2. Test the full import workflow
-3. Check Blender console for errors
-
-## Debugging Tips
-
-### Enable Console Output
-
-In Blender: `Window > Toggle System Console` (Windows) or check terminal (Linux/Mac)
-
-### Common Issues
-
-**Import errors**: Check that all relative imports use `.` prefix
-```python
-# Correct
-from ..utils.naming import get_name_from_json
-
-# Wrong
-from utils.naming import get_name_from_json
-```
-
-**Circular imports**: Use lazy imports or restructure
-```python
-# Lazy import (in function)
-def some_function():
-    from ..main import import_asset
-    import_asset(...)
-```
-
-**Module not found**: Ensure `__init__.py` exists in all package directories
-
-### Logging
-
-The addon uses print statements for logging. Look for:
-- `✅` - Success messages
-- `⚠️` - Warnings
-- `❌` - Errors
-- `🔍` - Debug/process information
-
-## File Locations Reference
-
-| Purpose | Location |
-|---------|----------|
-| Add new import type | `operations/` |
-| Modify material creation | `operations/material_creator.py` |
-| Change communication | `communication/` |
-| Add utilities | `utils/` |
-| Modify UI | `ui/operators.py` |
-| Change workflow | `main.py` |
-| Addon registration | `__init__.py` |
-
-## Example: Complete Feature Addition
-
-Let's say you want to add support for importing GLTF files:
-
-1. **Create importer**: `operations/gltf_importer.py`
-   - `find_gltf_files(asset_dir)`
-   - `import_gltf_file(filepath, context)`
-
-2. **Update validation**: `utils/validation.py`
-   - Add 'gltf' detection in `validate_asset_directory()`
-
-3. **Update main flow**: `main.py`
-   - Add `elif asset_type == 'gltf'` branch
-   - Create `_import_gltf_asset()` function
-
-4. **Test**: Import a GLTF asset and verify it works
-
-**No changes needed to**:
-- Communication layer
-- UI layer (unless you want a GLTF-specific operator)
-- Material creation (unless GLTF needs special handling)
-
-## Getting Help
-
-- Check `ARCHITECTURE.md` for system design
-- Review existing code in similar modules
-- Check Blender console for error messages
-- Review function docstrings for usage
-
-## Contributing
-
-When adding features:
-1. Follow existing code style
-2. Add docstrings to new functions
-3. Test thoroughly
-4. Update documentation if needed
-
+For questions or issues, check the code comments or Blender console output (enable with `Window > Toggle System Console` on Windows).
