@@ -88,19 +88,24 @@ def get_material_name_from_json(asset_dir, json_filename=None):
 
 def detect_variation_number(obj_name):
     """Detect variation NUMBER from object name (not the final suffix).
-    
+
     This extracts the numeric identifier like _00, _01, _02 from filenames like:
     Aset_building__M_wkkmfa3dw_00_LOD0 → 0
     Aset_building__M_wkkmfa3dw_01_LOD0 → 1
-    
+
+    Also handles IOI format:
+    Aset_building__M_wkkmfa3dw_00_a_LOD_0_______ → index 0 (from letter 'a')
+
     Args:
         obj_name: Object name to analyze
-        
+
     Returns:
         int: Variation index (0 as default if no variation detected)
     """
     # Remove LOD suffix first to isolate the variation suffix
-    name_without_lod = re.sub(r'_?LOD\d+$', '', obj_name, flags=re.IGNORECASE)
+    # Handle both standard format (LOD0, LOD1) and IOI format (_LOD_0_______)
+    name_without_lod = re.sub(r'_LOD_[_0-9]{8}$', '', obj_name, flags=re.IGNORECASE)  # IOI format
+    name_without_lod = re.sub(r'_?LOD\d+$', '', name_without_lod, flags=re.IGNORECASE)  # Standard format
     
     # Pattern 1: _A, _B, _C (case insensitive, single letter at end)
     # Convert to index: a=0, b=1, c=2, etc.

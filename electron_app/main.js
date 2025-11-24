@@ -597,13 +597,137 @@ function injectDebugScript() {
                 btn.dataset.originalText = 'Import to Blender';
               }
 
-              // Add click handler to show progress bar
-              // Use bubble phase (false) to run AFTER Quixel's native handlers
-              btn.addEventListener('click', function(e) {
-                // DO NOT prevent default - let Quixel's download handler run first!
-                // The will-download event will intercept the actual download
+              // Add click handler - use CAPTURE phase (true) to run BEFORE Quixel's handlers
+              // This allows us to check if asset exists locally and prevent API call
+              const clickHandler = function(e) {
+                // Extract asset ID from URL to check if asset exists locally
+                const urlParams = new URLSearchParams(window.location.search);
+                const assetId = urlParams.get('assetId') || urlParams.get('id');
+                
+                // Also try to extract from path (e.g., /assets/12345)
+                let assetIdFromPath = null;
+                const pathMatch = window.location.pathname.match(/\\/(?:assets|asset)\\/([^/]+)/);
+                if (pathMatch) {
+                  assetIdFromPath = pathMatch[1];
+                }
+                
+                const finalAssetId = assetId || assetIdFromPath;
+                
+                // If we have an asset ID, check if it exists locally before allowing API call
+                if (finalAssetId) {
+                  // Check if we already have a cached result for this asset
+                  const cacheKey = 'quixel_asset_' + finalAssetId;
+                  const cachedResult = window[cacheKey];
+                  
+                  if (cachedResult !== undefined) {
+                    // We have a cached result
+                    if (cachedResult && cachedResult.path) {
+                      // Asset exists locally! Prevent API call and import directly
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.stopImmediatePropagation();
+                      
+                      // Change button text to "Importing"
+                      if (btn._textElement) {
+                        btn._textElement.textContent = 'Importing';
+                        btn._textElement.classList.add('animated-dots');
+                      }
+                      
+                      // Add progress bar
+                      addProgressBarToButton(btn);
+                      window.currentDownloadButton = btn;
+                      
+                      // Trigger import directly
+                      console.log('QUIXEL_IMPORT_EXISTING_ASSET:' + cachedResult.path);
+                      return; // Exit early, don't allow normal flow
+                    } else {
+                      // Asset doesn't exist, allow normal flow
+                      // Don't prevent default, let it continue
+                    }
+                  } else {
+                    // No cached result - prevent default while we check
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    
+                    // Request check from Electron
+                    window.quixelAssetCheckInProgress = true;
+                    window.quixelAssetExists = false;
+                    window.quixelAssetPath = null;
+                    console.log('QUIXEL_CHECK_ASSET_EXISTS:' + finalAssetId);
+                    
+                    // Wait for Electron to respond (it will set window.quixelAssetExists)
+                    const checkInterval = setInterval(() => {
+                      if (!window.quixelAssetCheckInProgress) {
+                        clearInterval(checkInterval);
+                        
+                        // Cache the result
+                        const result = window.quixelAssetExists ? { path: window.quixelAssetPath } : false;
+                        window[cacheKey] = result;
+                        
+                        if (window.quixelAssetExists && window.quixelAssetPath) {
+                          // Asset exists locally! Import directly
+                          if (btn._textElement) {
+                            btn._textElement.textContent = 'Importing';
+                            btn._textElement.classList.add('animated-dots');
+                          }
+                          
+                          addProgressBarToButton(btn);
+                          window.currentDownloadButton = btn;
+                          
+                          // Trigger import
+                          console.log('QUIXEL_IMPORT_EXISTING_ASSET:' + window.quixelAssetPath);
+                        } else {
+                          // Asset doesn't exist, manually trigger the button click to allow normal flow
+                          // Create a synthetic click event that will bubble normally
+                          const syntheticEvent = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                          });
+                          // Remove our handler temporarily, dispatch event, then re-add
+                          const clickHandler = btn._quixelClickHandler;
+                          if (clickHandler) {
+                            btn.removeEventListener('click', clickHandler, true);
+                            btn.dispatchEvent(syntheticEvent);
+                            // Re-add handler after a short delay
+                            setTimeout(() => {
+                              btn.addEventListener('click', clickHandler, true);
+                            }, 100);
+                          }
+                        }
+                      }
+                    }, 10); // Check every 10ms
+                    
+                    // Timeout after 200ms - if no response, assume asset doesn't exist
+                    setTimeout(() => {
+                      if (window.quixelAssetCheckInProgress) {
+                        clearInterval(checkInterval);
+                        window.quixelAssetCheckInProgress = false;
+                        window[cacheKey] = false;
+                        
+                        // Manually trigger click to allow normal flow
+                        const clickHandler = btn._quixelClickHandler;
+                        if (clickHandler) {
+                          const syntheticEvent = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                          });
+                          btn.removeEventListener('click', clickHandler, true);
+                          btn.dispatchEvent(syntheticEvent);
+                          setTimeout(() => {
+                            btn.addEventListener('click', clickHandler, true);
+                          }, 100);
+                        }
+                      }
+                    }, 200);
+                    
+                    return; // Exit early while checking
+                  }
+                }
 
-                // Change button text to "Downloading" with animated dots
+                // Normal flow: Change button text to "Downloading" with animated dots
                 if (btn._textElement) {
                   btn._textElement.textContent = 'Downloading';
                   btn._textElement.classList.add('animated-dots');
@@ -661,7 +785,11 @@ function injectDebugScript() {
                     }
                   }, 10000); // 10 second timeout
                 }, 100);
-              }, false); // Use bubble phase to run AFTER native handlers
+              };
+              
+              // Store handler reference on button for later removal
+              btn._quixelClickHandler = clickHandler;
+              btn.addEventListener('click', clickHandler, true); // Use capture phase
             }
           });
         }
@@ -1275,6 +1403,103 @@ function saveImportToHistory(importData) {
 
   } catch (error) {
     // Failed to save import to history - don't crash
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 📁 ASSET FOLDER VALIDATION - Check if folder contains valid files
+// ═══════════════════════════════════════════════════════════════
+
+function isAssetFolderValid(folderPath) {
+  /**Check if an asset folder exists and contains valid files (FBX or surface materials).
+  
+  Args:
+    folderPath: Path to the asset folder
+    
+  Returns:
+    Object with {valid: boolean, isEmpty: boolean, reason: string}
+  */
+  try {
+    if (!fs.existsSync(folderPath)) {
+      return { valid: false, isEmpty: false, reason: 'Folder does not exist' };
+    }
+    
+    const stats = fs.statSync(folderPath);
+    if (!stats.isDirectory()) {
+      return { valid: false, isEmpty: false, reason: 'Path is not a directory' };
+    }
+    
+    // Read directory contents
+    const files = fs.readdirSync(folderPath);
+    
+    // Check if folder is completely empty
+    if (files.length === 0) {
+      return { valid: false, isEmpty: true, reason: 'Folder is empty' };
+    }
+    
+    // Check for FBX files (recursively)
+    function findFBXFiles(dir) {
+      let fbxFiles = [];
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            fbxFiles = fbxFiles.concat(findFBXFiles(fullPath));
+          } else if (entry.name.toLowerCase().endsWith('.fbx')) {
+            fbxFiles.push(fullPath);
+          }
+        }
+      } catch (err) {
+        // Ignore read errors
+      }
+      return fbxFiles;
+    }
+    
+    const fbxFiles = findFBXFiles(folderPath);
+    if (fbxFiles.length > 0) {
+      return { valid: true, isEmpty: false, reason: `Found ${fbxFiles.length} FBX file(s)` };
+    }
+    
+    // Check for surface material (JSON + texture files)
+    const jsonFile = files.find(f => f.toLowerCase().endsWith('.json'));
+    if (jsonFile) {
+      // Check for texture files recursively (common texture extensions)
+      function findTextureFiles(dir) {
+        let textureFiles = [];
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              textureFiles = textureFiles.concat(findTextureFiles(fullPath));
+            } else {
+              const ext = path.extname(entry.name).toLowerCase();
+              const textureExtensions = ['.png', '.jpg', '.jpeg', '.tga', '.tiff', '.tif', '.exr', '.hdr'];
+              if (textureExtensions.includes(ext)) {
+                textureFiles.push(fullPath);
+              }
+            }
+          }
+        } catch (err) {
+          // Ignore read errors
+        }
+        return textureFiles;
+      }
+      
+      const textureFiles = findTextureFiles(folderPath);
+      if (textureFiles.length > 0) {
+        return { valid: true, isEmpty: false, reason: `Found surface material (JSON + ${textureFiles.length} texture file(s))` };
+      } else {
+        return { valid: false, isEmpty: false, reason: 'Found JSON but no texture files' };
+      }
+    }
+    
+    // Folder exists but contains neither FBX files nor surface materials
+    return { valid: false, isEmpty: false, reason: 'Folder exists but contains no FBX files or surface materials' };
+    
+  } catch (error) {
+    return { valid: false, isEmpty: false, reason: `Error checking folder: ${error.message}` };
   }
 }
 
@@ -1948,6 +2173,22 @@ function createWindow() {
 
   // Global download handler - intercepts ALL downloads from BrowserView
   ses.on('will-download', (event, item, webContents) => {
+    // CRITICAL: Set save path IMMEDIATELY (synchronously) to prevent Windows file dialog
+    // We must do this before any async operations, otherwise the dialog will appear
+    const fs = require('fs');
+    const defaultBasePath = path.join(os.homedir(), 'Documents', 'Quixel Portal');
+    const defaultDownloadPath = path.join(defaultBasePath, 'Downloaded');
+    
+    // Create Downloaded directory if it doesn't exist
+    if (!fs.existsSync(defaultDownloadPath)) {
+      fs.mkdirSync(defaultDownloadPath, { recursive: true });
+    }
+    
+    const defaultFullPath = path.join(defaultDownloadPath, item.getFilename());
+    
+    // Set save path immediately to prevent file dialog
+    item.setSavePath(defaultFullPath);
+    
     // Clear download timeout since download actually started
     if (downloadTimeoutId) {
       clearTimeout(downloadTimeoutId);
@@ -1963,36 +2204,91 @@ function createWindow() {
     }
 
     // Get custom download path from the injected script via executeJavaScript
+    // Note: We've already set a default path above to prevent the dialog
+    // If a custom path is found, we'll use it for validation and folder operations
     browserView.webContents.executeJavaScript(
       'localStorage.getItem("quixelDownloadPath") || window.quixelDownloadPath || null'
     ).then(customPath => {
-      const basePath = customPath || path.join(os.homedir(), 'Documents', 'Quixel Portal');
+      const basePath = customPath || defaultBasePath;
       const downloadPath = path.join(basePath, 'Downloaded');
-      const fs = require('fs');
-
-      // Create Downloaded directory if it doesn't exist
+      
+      // Create Downloaded directory if it doesn't exist (in case custom path is different)
       if (!fs.existsSync(downloadPath)) {
         fs.mkdirSync(downloadPath, { recursive: true });
       }
 
-      const fullPath = path.join(downloadPath, item.getFilename());
+      // Determine the final path to use
+      // If custom path exists, use it; otherwise use the default we already set
+      const finalPath = customPath ? path.join(downloadPath, item.getFilename()) : defaultFullPath;
+      
+      // If we have a custom path and it's different from what we set, try to update it
+      // Note: This might fail if download already started, but we've prevented the dialog
+      if (customPath && finalPath !== defaultFullPath) {
+        try {
+          item.setSavePath(finalPath);
+          console.log(`📁 Quixel Portal: Using custom download path: ${finalPath}`);
+        } catch (err) {
+          // If we can't change it (download already started), use the default path
+          console.log(`⚠️ Quixel Portal: Could not update save path to custom location, using default: ${defaultFullPath}`);
+        }
+      }
 
-      // Check if file already exists (for ZIP files, check if extracted folder exists)
+      // Use the final path for all operations (validation, checking existence, etc.)
+      const fullPath = finalPath;
+
+      // Check if file already exists (for ZIP files, check if extracted folder exists and is valid)
       let alreadyExists = false;
       let existingPath = fullPath;
+      let folderValidation = null;
 
       if (item.getFilename().endsWith('.zip')) {
         const zipFileName = path.basename(item.getFilename(), '.zip');
         const extractPath = path.join(downloadPath, zipFileName);
         if (fs.existsSync(extractPath)) {
-          alreadyExists = true;
-          existingPath = extractPath;
+          // Validate that the extracted folder contains valid files
+          folderValidation = isAssetFolderValid(extractPath);
+          if (folderValidation.valid) {
+            alreadyExists = true;
+            existingPath = extractPath;
+          } else {
+            // Folder exists but is empty or invalid - allow re-download
+            console.log(`⚠️ Quixel Portal: Extracted folder exists but is invalid: ${folderValidation.reason}`);
+            console.log(`   Allowing re-download to fix empty/invalid folder`);
+            // Remove the empty/invalid folder to allow fresh extraction
+            try {
+              fs.rmSync(extractPath, { recursive: true, force: true });
+              console.log(`🗑️ Quixel Portal: Removed invalid folder: ${extractPath}`);
+            } catch (rmError) {
+              console.log(`⚠️ Quixel Portal: Failed to remove invalid folder: ${rmError.message}`);
+            }
+          }
         }
       } else if (fs.existsSync(fullPath)) {
-        alreadyExists = true;
+        // For non-ZIP files, check if it's a directory and validate it
+        const stats = fs.statSync(fullPath);
+        if (stats.isDirectory()) {
+          folderValidation = isAssetFolderValid(fullPath);
+          if (folderValidation.valid) {
+            alreadyExists = true;
+          } else {
+            // Directory exists but is empty or invalid - allow re-download
+            console.log(`⚠️ Quixel Portal: Asset folder exists but is invalid: ${folderValidation.reason}`);
+            console.log(`   Allowing re-download to fix empty/invalid folder`);
+            // Remove the empty/invalid folder to allow fresh download
+            try {
+              fs.rmSync(fullPath, { recursive: true, force: true });
+              console.log(`🗑️ Quixel Portal: Removed invalid folder: ${fullPath}`);
+            } catch (rmError) {
+              console.log(`⚠️ Quixel Portal: Failed to remove invalid folder: ${rmError.message}`);
+            }
+          }
+        } else {
+          // It's a file, not a directory - assume it exists
+          alreadyExists = true;
+        }
       }
 
-      // If asset already exists, skip download and notify
+      // If asset already exists and is valid, skip download and notify
       if (alreadyExists) {
 
         // Set a save path to prevent the file dialog from appearing
@@ -2231,6 +2527,102 @@ function createWindow() {
 
   // Listen for console messages to handle file explorer requests AND sign-in URL detection
   browserView.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    // Check if asset exists locally before allowing API call
+    if (typeof message === 'string' && message.startsWith('QUIXEL_CHECK_ASSET_EXISTS:')) {
+      const assetId = message.substring('QUIXEL_CHECK_ASSET_EXISTS:'.length);
+      
+      // Get download path
+      browserView.webContents.executeJavaScript(
+        'localStorage.getItem("quixelDownloadPath") || window.quixelDownloadPath || null'
+      ).then(customPath => {
+        const basePath = customPath || path.join(os.homedir(), 'Documents', 'Quixel Portal');
+        const downloadPath = path.join(basePath, 'Downloaded');
+        
+        // Check all folders in Downloaded directory for matching asset
+        let foundAssetPath = null;
+        
+        if (fs.existsSync(downloadPath)) {
+          try {
+            const folders = fs.readdirSync(downloadPath);
+            for (const folder of folders) {
+              const folderPath = path.join(downloadPath, folder);
+              if (!fs.statSync(folderPath).isDirectory()) continue;
+              
+              // Check if folder contains JSON with matching ID
+              const files = fs.readdirSync(folderPath);
+              const jsonFile = files.find(f => f.endsWith('.json'));
+              
+              if (jsonFile) {
+                try {
+                  const jsonPath = path.join(folderPath, jsonFile);
+                  const metadata = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+                  const folderAssetId = metadata.id || folder;
+                  
+                  // Check if IDs match (exact match or folder name match)
+                  if (folderAssetId === assetId || folder === assetId) {
+                    // Validate that folder contains valid files
+                    const validation = isAssetFolderValid(folderPath);
+                    if (validation.valid) {
+                      foundAssetPath = folderPath;
+                      break;
+                    }
+                  }
+                } catch (err) {
+                  // Skip invalid JSON files
+                }
+              } else {
+                // No JSON, check if folder name matches asset ID
+                if (folder === assetId) {
+                  const validation = isAssetFolderValid(folderPath);
+                  if (validation.valid) {
+                    foundAssetPath = folderPath;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            // Error reading download directory
+          }
+        }
+        
+        // Respond to injected script with result
+        if (foundAssetPath) {
+          browserView.webContents.executeJavaScript(
+            `window.quixelAssetExists = true; window.quixelAssetPath = ${JSON.stringify(foundAssetPath)}; window.quixelAssetCheckInProgress = false;`
+          );
+          console.log(`✅ Quixel Portal: Asset ${assetId} found locally at ${foundAssetPath}`);
+        } else {
+          browserView.webContents.executeJavaScript(
+            `window.quixelAssetExists = false; window.quixelAssetPath = null; window.quixelAssetCheckInProgress = false;`
+          );
+        }
+      });
+      
+      return; // Don't process further
+    }
+    
+    // Handle import of existing asset (triggered when asset exists locally)
+    if (typeof message === 'string' && message.startsWith('QUIXEL_IMPORT_EXISTING_ASSET:')) {
+      const assetPath = message.substring('QUIXEL_IMPORT_EXISTING_ASSET:'.length);
+      
+      // Send import request to Blender
+      sendImportRequestToBlender(assetPath);
+      
+      // Notify the page that import started
+      browserView.webContents.executeJavaScript(
+        `if (window.onDownloadComplete) {
+          window.onDownloadComplete({
+            url: window.location.href,
+            path: ${JSON.stringify(assetPath)},
+            extracted: true,
+            alreadyExisted: true
+          });
+        }`
+      );
+      
+      return; // Don't process further
+    }
     if (typeof message === 'string' && message.startsWith('QUIXEL_OPEN_EXPLORER:')) {
       const filePath = message.substring('QUIXEL_OPEN_EXPLORER:'.length);
 

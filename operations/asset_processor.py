@@ -85,6 +85,160 @@ def organize_objects_by_variation(objects):
     return variations
 
 
+def extract_lod_from_object_name(obj_name):
+    """Extract LOD level from object name.
+
+    Supports multiple formats:
+    - IOI format: base_name_LOD_0_______ (LOD level indicated by position of number)
+    - Standard format: base_name_LOD0, base_name_LOD1, etc.
+
+    Args:
+        obj_name: Name of the object
+
+    Returns:
+        int: LOD level (0-7), defaults to 0 if not found
+    """
+    # First, try to match IOI format: _LOD_ followed by 8 characters where the number's position indicates LOD level
+    # Example: _LOD_0_______ (LOD 0), _LOD__1______ (LOD 1), _LOD___2_____ (LOD 2)
+    ioi_pattern = re.compile(r'_LOD_([_0-9]{8})', re.IGNORECASE)
+    ioi_match = ioi_pattern.search(obj_name)
+
+    if ioi_match:
+        lod_string = ioi_match.group(1)  # e.g., "0_______" or "__1______"
+        # Find the position of the digit (0-7)
+        for i, char in enumerate(lod_string):
+            if char.isdigit():
+                # The position of the digit is the LOD level
+                return max(0, min(7, i))
+        # If no digit found in the IOI format, default to 0
+        return 0
+
+    # Fall back to standard LOD patterns: _LOD0, _LOD1, LOD0, LOD1, etc.
+    standard_patterns = [
+        re.compile(r'_?LOD(\d+)', re.IGNORECASE),  # Matches _LOD0, LOD1, etc.
+        re.compile(r'LOD(\d+)', re.IGNORECASE),     # Matches LOD0, LOD1 (without underscore)
+    ]
+
+    for pattern in standard_patterns:
+        match = pattern.search(obj_name)
+        if match:
+            lod_level = int(match.group(1))
+            # Clamp to valid range (0-7)
+            return max(0, min(7, lod_level))
+
+    # No LOD found, default to 0
+    return 0
+
+
+def set_ioi_lod_properties(obj, lod_level=None):
+    """Set IOI LOD properties on an object and rename it to match IOI naming convention.
+    
+    Sets IoiIsLODLevel{i}Member properties for LOD levels 0-7.
+    The object's LOD level is set to True, all others to False.
+    Also renames the object to IOI format: base_name_LOD_0_______ (where numbers indicate active LODs).
+    
+    Args:
+        obj: Blender object (must be a mesh)
+        lod_level: Optional LOD level (0-7). If None, extracted from object name.
+    """
+    if obj.type != 'MESH' or not obj.data:
+        return None, None
+    
+    # Store original name before any processing
+    original_name = obj.name
+    
+    # Extract LOD level from object name if not provided
+    if lod_level is None:
+        lod_level = extract_lod_from_object_name(original_name)
+    
+    # Clamp to valid range (0-7)
+    lod_level = max(0, min(7, lod_level))
+    
+    # Set all LOD level properties
+    for i in range(8):
+        prop_name = f"IoiIsLODLevel{str(i)}Member"
+        if i == lod_level:
+            obj[prop_name] = bool(True)
+        else:
+            obj[prop_name] = bool(False)
+    
+    # Rename object to match IOI naming convention: base_name_LOD_0_______
+    # IOI format: base_name_LOD_ followed by 8 characters (numbers for active LODs, underscores for inactive)
+    obj_name = original_name
+    
+    # Remove any existing LOD suffix (like _LOD0, LOD1, _LOD_01234567, etc.)
+    # IOI splits on "_LOD" to get the clean base name
+    if "_LOD" in obj_name.upper():
+        # Split on _LOD (case insensitive - handle both _LOD and _lod)
+        parts = obj_name.split("_LOD", 1)
+        if len(parts) > 1:
+            # Remove everything after _LOD (including old LOD numbers or IOI format)
+            clean_name = parts[0]
+        else:
+            clean_name = parts[0]
+    else:
+        # Try to remove LOD pattern without underscore (like LOD0 at end)
+        clean_name = re.sub(r'LOD\d+$', '', obj_name, flags=re.IGNORECASE)
+        if clean_name == obj_name:
+            # No LOD pattern found, use original name
+            clean_name = obj_name
+    
+    # Remove trailing underscores
+    clean_name = clean_name.rstrip('_')
+    
+    # Build IOI LOD suffix: _LOD_ followed by 8 characters (numbers for active, underscores for inactive)
+    lod_string = ""
+    for i in range(8):
+        if i == lod_level:
+            lod_string += str(i)
+        else:
+            lod_string += "_"
+    
+    # Create new name in IOI format: base_name_LOD_0_______
+    new_name = clean_name + "_LOD_" + lod_string
+    
+    # Only rename if different
+    if obj.name != new_name:
+        old_name = obj.name
+        obj.name = new_name
+        return old_name, new_name
+    
+    return None, None
+
+
+def set_ioi_lod_properties_for_objects(objects):
+    """Set IOI LOD properties on multiple objects.
+    
+    Args:
+        objects: List of Blender objects to process
+    """
+    print(f"\n  {'─'*40}")
+    print(f"  🏷️  SETTING IOI LOD PROPERTIES")
+    print(f"  {'─'*40}")
+    
+    processed_count = 0
+    renamed_count = 0
+    for obj in objects:
+        if obj.type == 'MESH' and obj.data:
+            # Store original name before processing (for logging)
+            original_name = obj.name
+            # Let set_ioi_lod_properties handle LOD extraction and renaming
+            old_name, new_name = set_ioi_lod_properties(obj, lod_level=None)
+            processed_count += 1
+            
+            if old_name and new_name:
+                renamed_count += 1
+                # Extract LOD level for logging
+                lod_level = extract_lod_from_object_name(old_name)
+                print(f"    ✅ Set LOD properties and renamed '{old_name}' → '{new_name}' (LOD{lod_level})")
+            else:
+                # Extract LOD level for logging
+                lod_level = extract_lod_from_object_name(obj.name)
+                print(f"    ✅ Set LOD properties on '{obj.name}' (LOD{lod_level}, name already correct)")
+    
+    print(f"    📊 Processed {processed_count} object(s), renamed {renamed_count} object(s)")
+
+
 def calculate_variation_bbox(mesh_objects):
     """Calculate the combined bounding box of all meshes in a variation.
     
@@ -165,7 +319,7 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
     print(f"  📦 STEP 6B: CREATING ATTACH ROOTS WITH PROPER SPACING")
     print(f"  {'─'*40}")
     
-    current_x_offset = 0.0
+    current_y_offset = 0.0
     created_attach_roots = []
     margin = 1.0  # Fixed 1 meter margin between variations
     
@@ -187,15 +341,20 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
         attach_root.scale = (1.0, 1.0, 1.0)
         attach_root.rotation_euler = (0.0, 0.0, 0.0)
         
-        # Position attach root at current X offset (this is the ONLY thing that moves in world space)
-        attach_root.location.x = current_x_offset
-        attach_root.location.y = 0.0
+        # Position attach root at current Y offset (this is the ONLY thing that moves in world space)
+        attach_root.location.x = 0.0
+        attach_root.location.y = current_y_offset
         attach_root.location.z = 0.0
+        
+        # Add IOI addon compatibility properties
+        attach_root["ioiAttachRootNode"] = bool(True)
+        attach_root["IoiG2ObjectType"] = str("static")
+        attach_root["IoiGizmoSize"] = attach_root.empty_display_size * 100
         
         context.collection.objects.link(attach_root)
         created_attach_roots.append(attach_root)
         
-        print(f"    📦 Created: {attach_root_name} at world position ({current_x_offset}, 0, 0)")
+        print(f"    📦 Created: {attach_root_name} at world position (0, {current_y_offset}, 0)")
         
         # Parent all variation objects to attach root
         # Objects keep their original world positions - Blender automatically calculates local positions
@@ -216,8 +375,8 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
         
         print(f"    ✅ Parented {len(variation_objects)} object(s) to attach root")
         
-        # Update X offset for next variation
-        current_x_offset += bbox['width'] + margin
+        # Update Y offset for next variation
+        current_y_offset += bbox['height'] + margin
     
     return created_attach_roots
 

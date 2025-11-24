@@ -26,6 +26,8 @@ from .asset_processor import (
     create_asset_hierarchy,
     cleanup_unused_materials,
     calculate_variation_bbox,
+    set_ioi_lod_properties,
+    set_ioi_lod_properties_for_objects,
 )
 from .name_corrector import (
     extract_lod_from_fbx,
@@ -55,6 +57,8 @@ __all__ = [
     'create_asset_hierarchy',
     'cleanup_unused_materials',
     'calculate_variation_bbox',
+    'set_ioi_lod_properties',
+    'set_ioi_lod_properties_for_objects',
     'extract_lod_from_fbx',
     'build_expected_naming',
     'find_canonical_base_name',

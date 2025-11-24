@@ -51,6 +51,7 @@ from .ui.operators import (
     QUIXEL_OT_open_portal,
     QUIXEL_OT_import_fbx,
 )
+from .ui.import_modal import QUIXEL_OT_import_confirm
 
 # Import communication functions
 from .communication.file_watcher import (
@@ -162,6 +163,7 @@ def register():
     bpy.utils.register_class(QUIXEL_OT_cleanup_requests)
     bpy.utils.register_class(QUIXEL_OT_open_portal)
     bpy.utils.register_class(QUIXEL_OT_import_fbx)
+    bpy.utils.register_class(QUIXEL_OT_import_confirm)
 
     # Register draw function to topbar
     # Use a persistent marker on the header type to track registration across module reloads
@@ -248,6 +250,11 @@ def unregister():
 
     try:
         bpy.utils.unregister_class(QUIXEL_OT_import_fbx)
+    except:
+        pass
+
+    try:
+        bpy.utils.unregister_class(QUIXEL_OT_import_confirm)
     except:
         pass
 

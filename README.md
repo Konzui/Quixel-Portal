@@ -48,28 +48,37 @@ Quixel Portal/
 The addon is organized into clear, modular components:
 
 ### Communication Layer (`communication/`)
+
 Handles all interaction with the Electron application:
+
 - **electron_bridge.py**: Manages instance IDs, process verification, heartbeat system, and file-based IPC
 - **file_watcher.py**: Monitors for import requests from Electron and validates them
 
 ### Operations Layer (`operations/`)
+
 Contains the core business logic for asset processing:
+
 - **portal_launcher.py**: Launches and manages the Electron application
 - **fbx_importer.py**: Imports FBX files and groups objects
 - **material_creator.py**: Creates materials from textures with variation support
 - **asset_processor.py**: Organizes objects by variation and creates hierarchy
 
 ### Utilities (`utils/`)
+
 Reusable helper functions:
+
 - **naming.py**: Asset naming conventions, JSON parsing, variation detection
 - **texture_loader.py**: Texture file discovery and image node creation
 - **validation.py**: Path validation and asset type detection
 
 ### UI Layer (`ui/`)
+
 Blender-specific UI components:
+
 - **operators.py**: Thin wrapper operators that call main.py functions
 
 ### Main Orchestrator (`main.py`)
+
 High-level workflow functions that coordinate between modules, hiding communication details from business logic.
 
 ## Installation
@@ -89,8 +98,8 @@ If you have the source code and want to build a production-ready zip file:
 
 1. Open a terminal/command prompt in the root directory
 2. Run the build script:
-   ```bash
-   python build.py
+   ```bashöö'
+   python build.p
    ```
 3. This will create `Quixel_Portal_v1.0.0.zip` ready for distribution
 
@@ -137,6 +146,7 @@ If you have the source code and want to build a production-ready zip file:
 ### File-Based IPC
 
 All communication happens via JSON files in `%TEMP%/quixel_portal/`:
+
 - `import_request.json`: Electron → Blender (asset download request)
 - `import_complete.json`: Blender → Electron (import completion notification)
 - `heartbeat_{instance_id}.txt`: Blender → Electron (alive signal)
@@ -145,6 +155,7 @@ All communication happens via JSON files in `%TEMP%/quixel_portal/`:
 ### Persistent Sessions
 
 The Electron app uses a persistent partition (`persist:quixel`) which stores:
+
 - Cookies
 - Local storage
 - Session storage
@@ -196,17 +207,19 @@ Built files will be in `electron_app/build/`
 To add support for importing OBJ files (for example):
 
 1. Create `operations/obj_importer.py`:
+
    ```python
    def find_obj_files(asset_dir):
        # Find OBJ files
        pass
-   
+
    def import_obj_file(filepath, context):
        # Import OBX file
        pass
    ```
 
 2. Update `main.py` to detect OBJ files:
+
    ```python
    # In import_asset() function
    elif asset_type == 'obj':
@@ -226,6 +239,7 @@ To add new texture types or material nodes:
 ### Modifying Communication
 
 All Electron communication is in `communication/`:
+
 - Change IPC protocol? Modify `electron_bridge.py`
 - Change polling frequency? Modify `file_watcher.py`
 - Import/export logic is unaffected

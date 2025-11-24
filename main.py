@@ -27,10 +27,13 @@ from .operations.asset_processor import (
     organize_objects_by_variation,
     create_asset_hierarchy,
     cleanup_unused_materials,
+    set_ioi_lod_properties_for_objects,
 )
 from .communication.electron_bridge import write_import_complete
 from .utils.naming import get_name_from_json, get_base_name
 from .utils.texture_loader import find_texture_files
+from .utils.validation import is_folder_empty, check_folder_contents
+from .ui.import_modal import show_import_toolbar
 
 
 def import_asset(asset_path, thumbnail_path=None, asset_name=None):
@@ -69,6 +72,23 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None):
     
     print(f"📁 Asset directory: {asset_dir}")
     
+    # Check if folder is empty before attempting import
+    is_empty, empty_error = is_folder_empty(asset_dir)
+    if is_empty:
+        print(f"❌ Asset directory is empty: {empty_error or 'Folder contains no files'}")
+        print(f"   This may indicate a failed download or extraction.")
+        print(f"   Please try downloading the asset again.")
+        return {'CANCELLED'}
+    
+    # Get detailed folder contents for better error messages
+    folder_status = check_folder_contents(asset_dir)
+    if folder_status.get('error') and not folder_status.get('has_fbx') and not folder_status.get('has_surface_material'):
+        print(f"⚠️ Asset directory validation:")
+        print(f"   - FBX files found: {folder_status.get('fbx_count', 0)}")
+        print(f"   - Surface material: {folder_status.get('has_surface_material', False)}")
+        print(f"   - Error: {folder_status.get('error')}")
+        print(f"   This may indicate an incomplete download. Please try downloading again.")
+    
     # Detect asset type
     asset_type = detect_asset_type(asset_dir)
     
@@ -105,17 +125,21 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None):
 
 def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name):
     """Import an FBX asset with all processing steps.
-    
+
     Args:
         asset_dir: Path to asset directory
         materials_before_import: Set of material names before import
         context: Blender context
         thumbnail_path: Optional thumbnail path
         asset_name: Optional asset name
-        
+
     Returns:
         dict: Blender operator result
     """
+    # Track all imported objects and materials for toolbar cleanup
+    all_imported_objects_tracker = []
+    all_imported_materials_tracker = []
+
     # Find all FBX files
     fbx_files = find_fbx_files(asset_dir)
     
@@ -173,6 +197,22 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     else:
         print(f"\n⚠️  Could not determine base name for correction - objects may be grouped incorrectly")
     
+    # Set IOI LOD properties on all imported objects (for IOI addon compatibility)
+    print(f"\n{'='*80}")
+    print(f"🏷️  STEP 1.6: SETTING IOI LOD PROPERTIES")
+    print(f"{'='*80}")
+    all_imported_objects_list = []
+    for fbx_file, imported_objects, _ in import_results:
+        all_imported_objects_list.extend(imported_objects)
+    set_ioi_lod_properties_for_objects(all_imported_objects_list)
+
+    # Track all imported objects for toolbar
+    all_imported_objects_tracker.extend(all_imported_objects_list)
+    print(f"\n  📊 DEBUG: Tracked {len(all_imported_objects_list)} objects initially")
+    for obj in all_imported_objects_list[:10]:  # Show first 10
+        if obj.type == 'MESH':
+            print(f"    - {obj.name} (type: {obj.type})")
+
     # Group imported objects by base name (after correction)
     all_imported_objects = group_imported_objects(import_results)
     
@@ -274,7 +314,9 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     child.parent = None
             
             # Remove old world root objects
+            print(f"    🗑️  DEBUG: Removing {len(old_world_roots)} world root object(s)")
             for old_root in old_world_roots:
+                print(f"      - Deleting: {old_root.name}")
                 bpy.data.objects.remove(old_root, do_unlink=True)
                 imported_objects.remove(old_root)
             
@@ -358,30 +400,139 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         print(f"\n  {'─'*40}")
         print(f"  📦 STEP 6: CREATING ATTACH ROOTS")
         print(f"  {'─'*40}")
-        create_asset_hierarchy(variations, attach_root_base_name, context)
+        attach_roots = create_asset_hierarchy(variations, attach_root_base_name, context)
+
+        # Track attach roots for cleanup
+        if attach_roots:
+            all_imported_objects_tracker.extend(attach_roots)
     
     # STEP 7: Cleanup
     print(f"\n  {'─'*40}")
     print(f"  🧹 STEP 7: CLEANING UP")
     print(f"  {'─'*40}")
     cleanup_unused_materials(materials_before_import)
-    
+
     # Force Blender to update
     bpy.context.view_layer.update()
-    
-    # Get asset name
+
+    # Collect all materials created during import
+    materials_after_import = set(bpy.data.materials.keys())
+    new_materials = materials_after_import - materials_before_import
+    all_imported_materials_tracker = [bpy.data.materials[name] for name in new_materials if name in bpy.data.materials]
+
+    # Get asset name (needed for completion notification)
     if not asset_name:
         asset_name = asset_dir.name
         json_name, _ = get_name_from_json(asset_dir)
         if json_name:
             asset_name = json_name
-    
-    # Notify Electron
+
+    # Notify Electron immediately after import completes
+    # This ensures the import button won't get stuck if user cancels
     write_import_complete(asset_dir, asset_name, thumbnail_path)
-    
+
     print(f"\n{'='*80}")
-    print(f"✅ IMPORT COMPLETE")
+    print(f"✅ IMPORT COMPLETE - SHOWING CONFIRMATION TOOLBAR")
     print(f"{'='*80}")
-    
+    print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
+    print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
+    print(f"  📡 Electron notified of successful import")
+    print(f"  ⏳ Waiting for user confirmation...")
+
+    # Define accept callback
+    def on_toolbar_accept():
+        """Handle toolbar accept - finalize import"""
+        print(f"\n{'='*80}")
+        print(f"✅ IMPORT ACCEPTED AND FINALIZED")
+        print(f"{'='*80}")
+
+    # Detect LOD levels from ALL imported objects right before showing toolbar
+    # This ensures we capture all LOD levels after all processing is complete
+    # We need to clean the tracker list first to remove any objects that were deleted during processing
+    from .operations.asset_processor import extract_lod_from_object_name
+
+    print(f"\n{'='*80}")
+    print(f"🔍 DEBUG: LOD DETECTION PROCESS")
+    print(f"{'='*80}")
+    print(f"  📊 Objects in tracker before cleanup: {len(all_imported_objects_tracker)}")
+
+    # Also show what's in the entire scene
+    all_scene_meshes = [obj for obj in bpy.data.objects if obj.type == 'MESH']
+    print(f"  🌍 Total mesh objects in entire scene: {len(all_scene_meshes)}")
+    print(f"  🔍 Sample mesh names in scene (first 15):")
+    for obj in all_scene_meshes[:15]:
+        print(f"    - {obj.name}")
+
+    # Clean up all_imported_objects_tracker to remove deleted objects
+    valid_objects = []
+    deleted_count = 0
+    for obj in all_imported_objects_tracker:
+        try:
+            # Check if object still exists in bpy.data.objects
+            if obj and obj.name in bpy.data.objects:
+                valid_objects.append(obj)
+            else:
+                deleted_count += 1
+        except ReferenceError:
+            # Object has been removed during processing, skip it
+            deleted_count += 1
+            pass
+
+    print(f"  🗑️  Objects deleted during processing: {deleted_count}")
+    print(f"  ✅ Valid objects remaining: {len(valid_objects)}")
+
+    # Update the tracker with only valid objects
+    all_imported_objects_tracker.clear()
+    all_imported_objects_tracker.extend(valid_objects)
+
+    # Now detect LOD levels from valid objects
+    print(f"\n  🔍 Scanning valid objects for LOD levels:")
+    lod_levels_set = set()
+    for obj in all_imported_objects_tracker:
+        if obj.type == 'MESH' and obj.data:
+            lod_level = extract_lod_from_object_name(obj.name)
+            lod_levels_set.add(lod_level)
+            print(f"    - {obj.name} → LOD{lod_level}")
+
+    lod_levels_tracker = sorted(list(lod_levels_set))
+    print(f"\n  📋 Complete LOD set collected: {lod_levels_set}")
+    print(f"  📋 Sorted LOD list: {lod_levels_tracker}")
+
+    if lod_levels_tracker:
+        print(f"  📊 Detected LOD levels for toolbar: {lod_levels_tracker}")
+    else:
+        # Default to LOD0 if no LOD levels detected
+        lod_levels_tracker = [0]
+        print(f"  ⚠️  No LOD levels detected, defaulting to: {lod_levels_tracker}")
+
+    # Show import confirmation toolbar
+    from .ui.import_modal import show_import_toolbar, get_active_toolbar
+
+    result = show_import_toolbar(
+        context,
+        all_imported_objects_tracker,
+        all_imported_materials_tracker,
+        materials_before_import
+    )
+
+    # Set the accept callback and LOD levels on the toolbar
+    toolbar = get_active_toolbar()
+    if toolbar:
+        # Set available LOD levels
+        toolbar.set_lod_levels(lod_levels_tracker)
+
+        # Position LODs for preview with text labels
+        toolbar.position_lods_for_preview()
+
+        # Wrap the original accept callback
+        original_accept = toolbar.on_accept
+
+        def combined_accept():
+            on_toolbar_accept()  # Print finalization message
+            if original_accept:
+                original_accept()  # Clean up toolbar
+
+        toolbar.on_accept = combined_accept
+
     return {'FINISHED'}
 

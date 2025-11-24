@@ -1,15 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch:*)",
-      "Bash(test:*)",
-      "Bash(npm run build-win:*)",
-      "Bash(cat:*)",
-      "Bash(python build.py:*)",
-      "Bash(python:*)",
-      "Bash(tasklist:*)",
-      "Bash(findstr:*)",
-      "Bash(wmic process where \"name like ''''%quixel%'''' or name like ''''%blender%''''\" get name,processid)"
+      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" push)"
     ],
     "deny": [],
     "ask": []
