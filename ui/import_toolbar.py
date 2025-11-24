@@ -14,6 +14,7 @@ import blf
 import gpu
 import math
 import mathutils
+from pathlib import Path
 from gpu_extras.batch import batch_for_shader
 from gpu_extras.presets import draw_circle_2d
 from mathutils import Vector, Matrix
@@ -856,9 +857,12 @@ class BL_UI_ToggleButton(BL_UI_Widget):
     def __init__(self, x, y, size):
         super().__init__(x, y, size, size)
         self._toggled = False
-        self._icon_text = "W"  # Text to show in button
+        self._icon_text = "W"  # Text to show in button (fallback)
         self._icon_size = 14
-        self._bg_color = (0.157, 0.157, 0.157, 1.0)  # #282828
+        self._icon_path = None  # Path to icon image (PNG)
+        self._icon_image = None  # Loaded Blender image
+        self._icon_texture = None  # GPU texture from image
+        self._bg_color = (0.133, 0.133, 0.133, 1.0)  # #222222
         self._toggled_bg_color = (0.047, 0.549, 0.914, 1.0)  # Blue when toggled
         self._hover_bg_color = (0.2, 0.2, 0.2, 1.0)
         self._border_color = (0.329, 0.329, 0.329, 1.0)
@@ -881,6 +885,44 @@ class BL_UI_ToggleButton(BL_UI_Widget):
     @icon_text.setter
     def icon_text(self, value):
         self._icon_text = value
+
+    @property
+    def icon_path(self):
+        return self._icon_path
+
+    @icon_path.setter
+    def icon_path(self, value):
+        self._icon_path = value
+        # Load image when path is set
+        if value:
+            self._load_icon_image()
+
+    def _load_icon_image(self):
+        """Load icon image and create GPU texture."""
+        if not self._icon_path:
+            return
+
+        icon_path = Path(self._icon_path)
+        
+        if not icon_path.exists():
+            print(f"⚠️ Wireframe icon not found at: {icon_path}")
+            return
+
+        try:
+            # Load image
+            self._icon_image = bpy.data.images.load(str(icon_path))
+            # Create GPU texture
+            self._icon_texture = gpu.texture.from_image(self._icon_image)
+        except Exception as e:
+            print(f"⚠️ Failed to load wireframe icon: {e}")
+            self._icon_image = None
+            self._icon_texture = None
+
+    def init(self, context):
+        """Initialize widget and load icon if path is set."""
+        super().init(context)
+        if self._icon_path:
+            self._load_icon_image()
 
     def draw(self):
         """Draw the square toggle button."""
@@ -906,19 +948,82 @@ class BL_UI_ToggleButton(BL_UI_Widget):
             segments=8
         )
 
-        # Draw border
-        self._draw_border(self.x_screen, self.y_screen, self.width, self._border_color, 1)
+        # Border removed - no border drawing
 
-        # Draw icon text centered
-        blf.size(0, self._icon_size)
-        text_width, text_height = blf.dimensions(0, self._icon_text)
-        text_x = self.x_screen + (self.width - text_width) / 2
-        text_y = self.y_screen + (self.height - text_height) / 2
+        # Draw icon image or text
+        if self._icon_texture:
+            # Draw icon image centered
+            self._draw_icon_image()
+        else:
+            # Draw icon text centered (fallback)
+            blf.size(0, self._icon_size)
+            text_width, text_height = blf.dimensions(0, self._icon_text)
+            text_x = self.x_screen + (self.width - text_width) / 2
+            text_y = self.y_screen + (self.height - text_height) / 2
 
-        blf.position(0, text_x, text_y, 0)
-        r, g, b, a = self._text_color
-        blf.color(0, r, g, b, a)
-        blf.draw(0, self._icon_text)
+            blf.position(0, text_x, text_y, 0)
+            r, g, b, a = self._text_color
+            blf.color(0, r, g, b, a)
+            blf.draw(0, self._icon_text)
+
+    def _draw_icon_image(self):
+        """Draw the icon image centered in the button."""
+        if not self._icon_texture:
+            return
+
+        # Calculate icon size (leave some padding)
+        padding = 4
+        icon_size = min(self.width, self.height) - (padding * 2)
+        icon_x = self.x_screen + (self.width - icon_size) / 2
+        icon_y = self.y_screen + (self.height - icon_size) / 2
+
+        # Use 2D image shader to draw the texture
+        gpu.state.blend_set('ALPHA')
+        
+        # Create shader for image drawing (2D_IMAGE is the correct builtin shader)
+        try:
+            shader = gpu.shader.from_builtin('2D_IMAGE')
+        except:
+            # Fallback: try alternative shader name for different Blender versions
+            try:
+                shader = gpu.shader.from_builtin('IMAGE')
+            except:
+                # If shader not available, fall back to text
+                blf.size(0, self._icon_size)
+                text_width, text_height = blf.dimensions(0, self._icon_text)
+                text_x = self.x_screen + (self.width - text_width) / 2
+                text_y = self.y_screen + (self.height - text_height) / 2
+                blf.position(0, text_x, text_y, 0)
+                r, g, b, a = self._text_color
+                blf.color(0, r, g, b, a)
+                blf.draw(0, self._icon_text)
+                gpu.state.blend_set('NONE')
+                return
+        
+        shader.bind()
+        shader.uniform_sampler("image", self._icon_texture)
+        
+        # Create quad vertices for the icon
+        vertices = (
+            (icon_x, icon_y),
+            (icon_x + icon_size, icon_y),
+            (icon_x + icon_size, icon_y + icon_size),
+            (icon_x, icon_y + icon_size)
+        )
+        
+        # Texture coordinates (corrected to fix vertical mirroring)
+        tex_coords = (
+            (0, 0),  # Bottom-left vertex -> bottom-left of texture
+            (1, 0),  # Bottom-right vertex -> bottom-right of texture
+            (1, 1),  # Top-right vertex -> top-right of texture
+            (0, 1)   # Top-left vertex -> top-left of texture
+        )
+        
+        indices = ((0, 1, 2), (0, 2, 3))
+        batch = batch_for_shader(shader, 'TRIS', {"pos": vertices, "texCoord": tex_coords}, indices=indices)
+        batch.draw(shader)
+        
+        gpu.state.blend_set('NONE')
 
     def _draw_border(self, x, y, size, color, thickness):
         """Draw button border."""
@@ -1384,7 +1489,7 @@ class ImportToolbar:
         # Create background panel
         self.background_panel = BL_UI_Widget(panel_x, panel_y, panel_width, panel_height)
         # Color #1d1d1d = RGB(29, 29, 29) = (29/255, 29/255, 29/255)
-        self.background_panel._bg_color = (0.114, 0.114, 0.114, 0.95)
+        self.background_panel._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d
         self.background_panel.init(context)
 
         # Store label positions and divider position for drawing
@@ -1452,10 +1557,10 @@ class ImportToolbar:
 
         # Top toolbar dimensions (label + slider + divider + wireframe button)
         lod_label_width = 60  # Width for "LOD0", "LOD1", etc.
-        label_to_slider_gap = 8
+        label_to_slider_gap = 2
         slider_width = 240
         slider_to_divider_gap = 8
-        divider_spacing = 20  # Space for divider line
+        divider_spacing = 16  # Space for divider line
         wireframe_button_size = button_height  # Square button
         top_right_padding = 8
 
@@ -1468,7 +1573,7 @@ class ImportToolbar:
 
         # Create top background panel
         self.top_background_panel = BL_UI_Widget(top_panel_x, top_panel_y, top_panel_width, panel_height)
-        self.top_background_panel._bg_color = (0.114, 0.114, 0.114, 0.95)
+        self.top_background_panel._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d
         self.top_background_panel.init(context)
 
         # Center widgets vertically within top panel
@@ -1497,7 +1602,14 @@ class ImportToolbar:
 
         # Create wireframe toggle button
         self.wireframe_toggle = BL_UI_ToggleButton(wireframe_x, top_widget_y, wireframe_button_size)
-        self.wireframe_toggle.icon_text = "W"
+        # Set icon path (fallback to "W" text if icon not found)
+        addon_dir = Path(__file__).parent.parent
+        icon_path = addon_dir / "electron_app" / "assets" / "icons" / "wireframe_32.png"
+        if icon_path.exists():
+            self.wireframe_toggle.icon_path = str(icon_path)
+        else:
+            # Fallback to text if icon not found
+            self.wireframe_toggle.icon_text = "W"
         self.wireframe_toggle.on_toggle = self._handle_wireframe_toggle
         self.wireframe_toggle.init(context)
 
