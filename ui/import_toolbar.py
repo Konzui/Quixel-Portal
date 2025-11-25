@@ -1695,13 +1695,14 @@ class ImportToolbar:
             # Get LOD level from object name
             lod_level = extract_lod_from_object_name(obj.name)
 
-            # Only show the currently selected LOD
+            # Only show the currently selected LOD using the eye icon (hide_viewport)
+            # Also ensure the monitor/display icon is NOT hiding the object (hide_set)
             if lod_level == self.current_preview_lod:
-                obj.hide_viewport = False
-                obj.hide_render = False
+                obj.hide_viewport = False  # Eye icon - visible
+                obj.hide_set(False)  # Monitor icon - enabled in viewport
             else:
-                obj.hide_viewport = True
-                obj.hide_render = True
+                obj.hide_viewport = True  # Eye icon - hidden
+                obj.hide_set(False)  # Monitor icon - enabled in viewport (so eye icon works)
 
         # Update text label visibility - only show label for current LOD
         for text_obj, lod_level in self.lod_text_objects:
@@ -1771,6 +1772,10 @@ class ImportToolbar:
         # Step 4: Clean up unused materials
         print(f"\n  🧹 Cleaning up unused materials")
         self._cleanup_unused_materials()
+
+        # Step 5: Show only the lowest LOD level (highest number)
+        print(f"\n  👁️ Setting visibility: showing only lowest LOD")
+        self._show_only_lowest_lod()
 
         if self.on_accept:
             self.on_accept()
@@ -2089,6 +2094,45 @@ class ImportToolbar:
             print(f"  ✅ Removed {removed_count} unused material(s)")
         else:
             print(f"  ℹ️  No unused materials to remove")
+
+    def _show_only_lowest_lod(self):
+        """Show all LOD levels in viewport after accepting import."""
+        import bpy
+        from ..operations.asset_processor import extract_lod_from_object_name
+
+        # Find all LOD levels in imported objects
+        lod_levels = set()
+        for obj in self.imported_objects:
+            if not obj or obj.name not in bpy.data.objects:
+                continue
+            if obj.type != 'MESH' or not obj.data:
+                continue
+
+            lod_level = extract_lod_from_object_name(obj.name)
+            lod_levels.add(lod_level)
+
+        if not lod_levels:
+            print(f"  ℹ️  No LOD levels found")
+            return
+
+        print(f"  📊 Available LOD levels: {sorted(lod_levels)}")
+        print(f"  👁️ Showing all LOD levels")
+
+        # Show all LODs using the eye icon
+        for obj in self.imported_objects:
+            if not obj or obj.name not in bpy.data.objects:
+                continue
+            if obj.type != 'MESH' or not obj.data:
+                continue
+
+            lod_level = extract_lod_from_object_name(obj.name)
+
+            # Show all LODs using the eye icon (hide_viewport)
+            # Also ensure the monitor/display icon is NOT hiding the object (hide_set)
+            obj.hide_viewport = False  # Eye icon - visible
+            obj.hide_set(False)  # Monitor icon - enabled in viewport
+
+        print(f"  ✅ Visibility set: All {len(lod_levels)} LOD level(s) visible")
 
     def _handle_cancel(self, button):
         """Handle Cancel button click."""
