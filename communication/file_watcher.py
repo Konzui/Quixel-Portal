@@ -112,7 +112,8 @@ def check_import_requests():
         asset_path = request_data.get('asset_path')
         thumbnail_path = request_data.get('thumbnail')
         asset_name = request_data.get('asset_name')
-        
+        glacier_setup = request_data.get('glacier_setup', True)  # Default to True (enabled)
+
         # Validate the request
         is_valid, reason = validate_request(request_data, instance_id)
         
@@ -141,6 +142,7 @@ def check_import_requests():
         print(f"   Asset path: {asset_path}")
         print(f"   Thumbnail: {thumbnail_path}")
         print(f"   Asset name: {asset_name}")
+        print(f"   Glacier Setup: {glacier_setup}")
         print(f"   Instance ID: {instance_id}")
         
         # CRITICAL: Delete request file FIRST to prevent infinite loops
@@ -160,7 +162,8 @@ def check_import_requests():
                 result = import_asset(
                     asset_path=asset_path,
                     thumbnail_path=thumbnail_path or '',
-                    asset_name=asset_name or ''
+                    asset_name=asset_name or '',
+                    glacier_setup=glacier_setup
                 )
                 
                 if result == {'FINISHED'}:

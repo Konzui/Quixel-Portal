@@ -279,27 +279,46 @@ def launch_electron_app(instance_id):
 
 def write_heartbeat(instance_id=None):
     """Write heartbeat file to signal Electron that Blender is still alive.
-    
+
+    This function checks if the Electron portal is still running before writing
+    the heartbeat. If the portal is no longer running, it stops the heartbeat timer.
+
     Args:
         instance_id: Optional Blender instance ID. If not provided, will be retrieved automatically.
-        
+
     Returns:
-        float: Time interval in seconds until next heartbeat (30.0)
+        float or None: Time interval in seconds until next heartbeat (30.0), or None to stop the timer
     """
     try:
         # Get instance ID if not provided (for timer callbacks)
         if instance_id is None:
             instance_id = get_or_create_instance_id()
-        
+
         if not instance_id:
             return 30.0  # Check again in 30 seconds
-        
+
+        # Check if Electron is still running - if not, stop the heartbeat
+        is_running, pid, lock_file = check_electron_running(instance_id)
+        if not is_running:
+            print(f"🛑 Quixel Portal: Electron not running, stopping heartbeat timer")
+            # Clean up our heartbeat file
+            temp_dir = get_temp_dir()
+            heartbeat_file = temp_dir / f"heartbeat_{instance_id}.txt"
+            if heartbeat_file.exists():
+                try:
+                    heartbeat_file.unlink()
+                    print(f"🧹 Quixel Portal: Cleaned up heartbeat file")
+                except Exception:
+                    pass
+            # Return None to unregister the timer
+            return None
+
         temp_dir = get_temp_dir()
-        
+
         # Create directory if it doesn't exist
         if not temp_dir.exists():
             temp_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Write heartbeat file with timestamp and PID
         heartbeat_file = temp_dir / f"heartbeat_{instance_id}.txt"
         heartbeat_data = {
@@ -307,12 +326,12 @@ def write_heartbeat(instance_id=None):
             "blender_pid": os.getpid(),
             "instance_id": instance_id
         }
-        
+
         with open(heartbeat_file, 'w') as f:
             json.dump(heartbeat_data, f, indent=2)
-        
+
         print(f"💓 Quixel Portal: Heartbeat written (timestamp: {heartbeat_data['timestamp']:.0f})")
-        
+
         # Clean up old heartbeat files (>2 hours old)
         try:
             current_time = time.time()
@@ -320,7 +339,7 @@ def write_heartbeat(instance_id=None):
                 # Skip our own file
                 if old_file == heartbeat_file:
                     continue
-                
+
                 # Check file age
                 try:
                     file_age = current_time - old_file.stat().st_mtime
@@ -333,10 +352,10 @@ def write_heartbeat(instance_id=None):
         except Exception:
             # Failed to clean up, not critical
             pass
-        
+
     except Exception as e:
         print(f"⚠️ Quixel Portal: Failed to write heartbeat: {e}")
-    
+
     # Continue the timer - write heartbeat every 30 seconds
     return 30.0
 

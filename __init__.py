@@ -199,10 +199,8 @@ def register():
     # Start the background timer to check for import requests
     setup_request_watcher()
 
-    # Start the background timer to write heartbeat
-    if not bpy.app.timers.is_registered(write_heartbeat):
-        bpy.app.timers.register(write_heartbeat)
-        print("✅ Quixel Portal: Heartbeat writer started (writing every 30 seconds)")
+    # Note: Heartbeat timer is now started only when portal is opened
+    # (see QUIXEL_OT_open_portal operator)
 
 
 def unregister():

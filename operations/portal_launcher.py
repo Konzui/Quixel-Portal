@@ -10,6 +10,7 @@ from ..communication.electron_bridge import (
     send_show_window_signal,
     launch_electron_app,
     check_debounce,
+    write_heartbeat,
 )
 
 
@@ -54,8 +55,13 @@ def open_quixel_portal(context):
     # Launch new Electron instance
     print(f"🚀 Quixel Portal: Launching new Electron instance...")
     success, error_msg = launch_electron_app(instance_id)
-    
+
     if success:
+        # Start the heartbeat timer now that the portal is open
+        if not bpy.app.timers.is_registered(write_heartbeat):
+            bpy.app.timers.register(write_heartbeat)
+            print("✅ Quixel Portal: Heartbeat writer started (writing every 30 seconds)")
+
         return {'FINISHED'}
     else:
         # Report error to user

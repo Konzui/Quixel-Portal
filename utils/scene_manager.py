@@ -216,25 +216,41 @@ def cleanup_imported_materials(imported_materials, materials_before_import):
     removed_count = 0
 
     for mat in imported_materials:
+        # Store material name before accessing it (in case it gets deleted)
+        mat_name = None
         try:
-            # Check if material still exists
-            if mat.name not in bpy.data.materials:
+            # Try to get the material name
+            mat_name = mat.name
+        except ReferenceError:
+            # Material was already deleted (e.g., when preview scene was deleted)
+            continue
+
+        try:
+            # Check if material still exists in bpy.data.materials
+            if mat_name not in bpy.data.materials:
                 continue
 
             # Check if this material was created during this import
-            if mat.name not in materials_before_import:
+            if mat_name not in materials_before_import:
                 # Remove the material
                 bpy.data.materials.remove(mat, do_unlink=True)
-                print(f"  🗑️ Removed: {mat.name}")
+                print(f"  🗑️ Removed: {mat_name}")
                 removed_count += 1
 
+        except ReferenceError:
+            # Material was deleted between checks - this is fine
+            continue
         except Exception as e:
-            print(f"  ⚠️ Failed to remove material '{mat.name}': {e}")
+            # Only print error if we have a valid material name
+            if mat_name:
+                print(f"  ⚠️ Failed to remove material '{mat_name}': {e}")
+            else:
+                print(f"  ⚠️ Failed to remove material (already deleted): {e}")
 
     if removed_count > 0:
         print(f"  ✅ Cleaned up {removed_count} material(s)")
     else:
-        print(f"  ℹ️ No materials to clean up")
+        print(f"  ℹ️ No materials to clean up (may have been auto-deleted with preview scene)")
 
 
 def setup_preview_camera(temp_scene, imported_objects):

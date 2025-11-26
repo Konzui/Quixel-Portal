@@ -605,29 +605,37 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
             print(f"✅ USER ACCEPTED IMPORT - TRANSFERRING ASSETS")
             print(f"{'='*80}")
 
-            # Transfer all assets from temp scene to original scene
-            transferred_objects = transfer_assets_to_original_scene(
-                temp_scene,
-                original_scene,
-                all_imported_objects_tracker,
-                all_imported_materials_tracker
-            )
+            try:
+                # Transfer all assets from temp scene to original scene
+                transferred_objects = transfer_assets_to_original_scene(
+                    temp_scene,
+                    original_scene,
+                    all_imported_objects_tracker,
+                    all_imported_materials_tracker
+                )
 
-            # Switch back to original scene
-            switch_to_scene(bpy.context, original_scene)
+                # Switch back to original scene
+                switch_to_scene(bpy.context, original_scene)
 
-            # Delete temporary preview scene
-            cleanup_preview_scene(temp_scene)
+                # Delete temporary preview scene
+                cleanup_preview_scene(temp_scene)
 
-            # Clean up toolbar UI
-            cleanup_toolbar()
+                print(f"\n{'='*80}")
+                print(f"✅ IMPORT COMPLETE - ASSETS TRANSFERRED TO ORIGINAL SCENE")
+                print(f"{'='*80}")
+                print(f"  📦 Transferred {len(transferred_objects)} object(s)")
+                print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
+                print(f"  🎬 Returned to scene: {original_scene.name}")
 
-            print(f"\n{'='*80}")
-            print(f"✅ IMPORT COMPLETE - ASSETS TRANSFERRED TO ORIGINAL SCENE")
-            print(f"{'='*80}")
-            print(f"  📦 Transferred {len(transferred_objects)} object(s)")
-            print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
-            print(f"  🎬 Returned to scene: {original_scene.name}")
+            except Exception as e:
+                print(f"\n⚠️ Error during accept cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+
+            finally:
+                # ALWAYS clean up toolbar UI, even if cleanup failed
+                # This prevents the toolbar from getting stuck on screen
+                cleanup_toolbar()
 
         # Define cancel callback - discard everything and return to original scene
         def on_cancel():
@@ -638,26 +646,34 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
             print(f"❌ USER CANCELLED IMPORT - DISCARDING ASSETS")
             print(f"{'='*80}")
 
-            # Switch back to original scene first
-            switch_to_scene(bpy.context, original_scene)
+            try:
+                # Switch back to original scene first
+                switch_to_scene(bpy.context, original_scene)
 
-            # Delete temporary preview scene (auto-cleanup of objects)
-            cleanup_preview_scene(temp_scene)
+                # Delete temporary preview scene (auto-cleanup of objects)
+                cleanup_preview_scene(temp_scene)
 
-            # Clean up materials that were created during import
-            cleanup_imported_materials(
-                all_imported_materials_tracker,
-                materials_before_import
-            )
+                # Clean up materials that were created during import
+                cleanup_imported_materials(
+                    all_imported_materials_tracker,
+                    materials_before_import
+                )
 
-            # Clean up toolbar UI
-            cleanup_toolbar()
+                print(f"\n{'='*80}")
+                print(f"✅ IMPORT CANCELLED - ORIGINAL SCENE UNCHANGED")
+                print(f"{'='*80}")
+                print(f"  🎬 Returned to scene: {original_scene.name}")
+                print(f"  🧹 All imported assets discarded")
 
-            print(f"\n{'='*80}")
-            print(f"✅ IMPORT CANCELLED - ORIGINAL SCENE UNCHANGED")
-            print(f"{'='*80}")
-            print(f"  🎬 Returned to scene: {original_scene.name}")
-            print(f"  🧹 All imported assets discarded")
+            except Exception as e:
+                print(f"\n⚠️ Error during cancel cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+
+            finally:
+                # ALWAYS clean up toolbar UI, even if cleanup failed
+                # This prevents the toolbar from getting stuck on screen
+                cleanup_toolbar()
 
         # Set the callbacks on the toolbar
         toolbar.on_accept = on_accept
