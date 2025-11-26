@@ -33,12 +33,20 @@ from .communication.electron_bridge import write_import_complete
 from .utils.naming import get_name_from_json, get_base_name
 from .utils.texture_loader import find_texture_files
 from .utils.validation import is_folder_empty, check_folder_contents
+from .utils.scene_manager import (
+    create_preview_scene,
+    switch_to_scene,
+    transfer_assets_to_original_scene,
+    cleanup_preview_scene,
+    cleanup_imported_materials,
+    setup_preview_camera,
+)
 from .ui.import_modal import show_import_toolbar
 
 
-def import_asset(asset_path, thumbnail_path=None, asset_name=None):
+def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup=True):
     """Main entry point for importing an asset.
-    
+
     This function orchestrates the entire import process:
     1. Detects asset type (FBX or surface material)
     2. Imports FBX files or creates surface material
@@ -47,19 +55,30 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None):
     5. Creates asset hierarchy
     6. Cleans up temporary materials
     7. Notifies Electron of completion
-    
+
     Args:
         asset_path: Path to the asset directory
         thumbnail_path: Optional path to thumbnail image
         asset_name: Optional asset name override
-        
+        glacier_setup: Whether to show toolbar with import settings (default: True)
+
     Returns:
         dict: Blender operator result {'FINISHED'} or {'CANCELLED'}
     """
     print(f"\n{'='*80}")
     print(f"🚀 STARTING QUIXEL ASSET IMPORT")
     print(f"{'='*80}")
-    
+
+    # Cancel any active toolbar before starting new import
+    from .ui.import_modal import get_active_toolbar
+    active_toolbar = get_active_toolbar()
+    if active_toolbar:
+        print(f"⚠️  Canceling active toolbar from previous import")
+        try:
+            active_toolbar._handle_cancel(None)
+        except Exception as e:
+            print(f"⚠️  Failed to cancel active toolbar: {e}")
+
     # Track materials that exist before import
     materials_before_import = set(bpy.data.materials.keys())
     
@@ -116,14 +135,14 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None):
     
     elif asset_type == 'fbx':
         # Handle FBX import
-        return _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name)
+        return _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup)
     
     else:
         print(f"⚠️ No FBX files or surface materials found in {asset_dir}")
         return {'CANCELLED'}
 
 
-def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name):
+def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup=True):
     """Import an FBX asset with all processing steps.
 
     Args:
@@ -132,19 +151,45 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         context: Blender context
         thumbnail_path: Optional thumbnail path
         asset_name: Optional asset name
+        glacier_setup: Whether to show toolbar with import settings (default: True)
 
     Returns:
         dict: Blender operator result
     """
+    # Store original scene reference BEFORE creating temp scene
+    original_scene = context.scene
+    original_collection = context.collection
+
+    print(f"\n{'='*80}")
+    print(f"🎬 SCENE SETUP: CREATING TEMPORARY PREVIEW SCENE")
+    print(f"{'='*80}")
+    print(f"  📌 Original scene: {original_scene.name}")
+
+    # Create temporary preview scene for import
+    temp_scene = create_preview_scene(context)
+
+    # Switch to temporary scene for import
+    if not switch_to_scene(context, temp_scene):
+        print(f"❌ Failed to switch to preview scene")
+        return {'CANCELLED'}
+
+    # Update context after scene switch
+    context = bpy.context
+
+    print(f"  ✅ Now working in temporary preview scene: {temp_scene.name}")
+
     # Track all imported objects and materials for toolbar cleanup
     all_imported_objects_tracker = []
     all_imported_materials_tracker = []
 
     # Find all FBX files
     fbx_files = find_fbx_files(asset_dir)
-    
+
     if not fbx_files:
         print(f"⚠️ No FBX files found")
+        # Clean up temp scene before returning
+        switch_to_scene(bpy.context, original_scene)
+        cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
     
     print(f"📦 Found {len(fbx_files)} FBX file(s) to import:")
@@ -165,6 +210,9 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     
     if not import_results:
         print(f"❌ Failed to import any FBX files")
+        # Clean up temp scene before returning
+        switch_to_scene(bpy.context, original_scene)
+        cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
     
     # NEW STEP: Correct object names before grouping
@@ -431,20 +479,42 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     # This ensures the import button won't get stuck if user cancels
     write_import_complete(asset_dir, asset_name, thumbnail_path)
 
+    # Check if Glacier Setup is enabled
+    if not glacier_setup:
+        # Import directly without showing toolbar - just transfer to original scene
+        print(f"\n{'='*80}")
+        print(f"✅ IMPORT COMPLETE - GLACIER SETUP DISABLED")
+        print(f"{'='*80}")
+        print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
+        print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
+        print(f"  📡 Electron notified of successful import")
+        print(f"  ⚡ Asset imported directly without toolbar (Glacier Setup disabled)")
+
+        # Transfer assets to original scene automatically
+        transferred_objects = transfer_assets_to_original_scene(
+            temp_scene,
+            original_scene,
+            all_imported_objects_tracker,
+            all_imported_materials_tracker
+        )
+
+        # Switch back to original scene
+        switch_to_scene(bpy.context, original_scene)
+
+        # Delete temporary preview scene
+        cleanup_preview_scene(temp_scene)
+
+        print(f"  🎬 Assets transferred to original scene: {original_scene.name}")
+
+        return {'FINISHED'}
+
     print(f"\n{'='*80}")
     print(f"✅ IMPORT COMPLETE - SHOWING CONFIRMATION TOOLBAR")
     print(f"{'='*80}")
     print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
     print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
     print(f"  📡 Electron notified of successful import")
-    print(f"  ⏳ Waiting for user confirmation...")
-
-    # Define accept callback
-    def on_toolbar_accept():
-        """Handle toolbar accept - finalize import"""
-        print(f"\n{'='*80}")
-        print(f"✅ IMPORT ACCEPTED AND FINALIZED")
-        print(f"{'='*80}")
+    print(f"  ⏳ Waiting for user confirmation in preview scene...")
 
     # Detect LOD levels from ALL imported objects right before showing toolbar
     # This ensures we capture all LOD levels after all processing is complete
@@ -505,14 +575,16 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         lod_levels_tracker = [0]
         print(f"  ⚠️  No LOD levels detected, defaulting to: {lod_levels_tracker}")
 
-    # Show import confirmation toolbar
+    # Show import confirmation toolbar with scene references
     from .ui.import_modal import show_import_toolbar, get_active_toolbar
 
     result = show_import_toolbar(
         context,
         all_imported_objects_tracker,
         all_imported_materials_tracker,
-        materials_before_import
+        materials_before_import,
+        original_scene=original_scene,
+        temp_scene=temp_scene
     )
 
     # Set the accept callback and LOD levels on the toolbar
@@ -524,15 +596,72 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         # Position LODs for preview with text labels
         toolbar.position_lods_for_preview()
 
-        # Wrap the original accept callback
-        original_accept = toolbar.on_accept
+        # Define accept callback - transfer assets and return to original scene
+        def on_accept():
+            """Handle accept - transfer assets to original scene and cleanup."""
+            from .ui.import_modal import cleanup_toolbar
 
-        def combined_accept():
-            on_toolbar_accept()  # Print finalization message
-            if original_accept:
-                original_accept()  # Clean up toolbar
+            print(f"\n{'='*80}")
+            print(f"✅ USER ACCEPTED IMPORT - TRANSFERRING ASSETS")
+            print(f"{'='*80}")
 
-        toolbar.on_accept = combined_accept
+            # Transfer all assets from temp scene to original scene
+            transferred_objects = transfer_assets_to_original_scene(
+                temp_scene,
+                original_scene,
+                all_imported_objects_tracker,
+                all_imported_materials_tracker
+            )
+
+            # Switch back to original scene
+            switch_to_scene(bpy.context, original_scene)
+
+            # Delete temporary preview scene
+            cleanup_preview_scene(temp_scene)
+
+            # Clean up toolbar UI
+            cleanup_toolbar()
+
+            print(f"\n{'='*80}")
+            print(f"✅ IMPORT COMPLETE - ASSETS TRANSFERRED TO ORIGINAL SCENE")
+            print(f"{'='*80}")
+            print(f"  📦 Transferred {len(transferred_objects)} object(s)")
+            print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
+            print(f"  🎬 Returned to scene: {original_scene.name}")
+
+        # Define cancel callback - discard everything and return to original scene
+        def on_cancel():
+            """Handle cancel - discard all assets and return to original scene."""
+            from .ui.import_modal import cleanup_toolbar
+
+            print(f"\n{'='*80}")
+            print(f"❌ USER CANCELLED IMPORT - DISCARDING ASSETS")
+            print(f"{'='*80}")
+
+            # Switch back to original scene first
+            switch_to_scene(bpy.context, original_scene)
+
+            # Delete temporary preview scene (auto-cleanup of objects)
+            cleanup_preview_scene(temp_scene)
+
+            # Clean up materials that were created during import
+            cleanup_imported_materials(
+                all_imported_materials_tracker,
+                materials_before_import
+            )
+
+            # Clean up toolbar UI
+            cleanup_toolbar()
+
+            print(f"\n{'='*80}")
+            print(f"✅ IMPORT CANCELLED - ORIGINAL SCENE UNCHANGED")
+            print(f"{'='*80}")
+            print(f"  🎬 Returned to scene: {original_scene.name}")
+            print(f"  🧹 All imported assets discarded")
+
+        # Set the callbacks on the toolbar
+        toolbar.on_accept = on_accept
+        toolbar.on_cancel = on_cancel
 
     return {'FINISHED'}
 

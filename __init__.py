@@ -64,6 +64,8 @@ from .communication.electron_bridge import (
     get_or_create_instance_id,
 )
 
+# Note: scene_manager import is done lazily to avoid issues during registration
+
 # Global variable to store icons
 custom_icons = None
 
@@ -134,6 +136,14 @@ def register():
 
     # Clean up any orphaned import requests from previous sessions
     cleanup_orphaned_requests()
+
+    # Clean up any orphaned preview scenes from previous sessions
+    # Import lazily to avoid initialization issues
+    try:
+        from .utils.scene_manager import cleanup_orphaned_preview_scenes
+        cleanup_orphaned_preview_scenes()
+    except Exception as e:
+        print(f"⚠️ Could not cleanup orphaned preview scenes: {e}")
 
     # Register custom icons
     custom_icons = bpy.utils.previews.new()

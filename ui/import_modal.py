@@ -169,7 +169,7 @@ class QUIXEL_OT_import_confirm(bpy.types.Operator):
             self._timer = None
 
 
-def show_import_toolbar(context, imported_objects, imported_materials, materials_before_import):
+def show_import_toolbar(context, imported_objects, imported_materials, materials_before_import, original_scene=None, temp_scene=None):
     """Show the import confirmation toolbar.
 
     This function sets up the toolbar with draw handlers.
@@ -179,6 +179,8 @@ def show_import_toolbar(context, imported_objects, imported_materials, materials
         imported_objects: List of imported objects for cleanup
         imported_materials: List of created materials for cleanup
         materials_before_import: Set of material names before import
+        original_scene: Optional reference to original scene (for scene switching)
+        temp_scene: Optional reference to temporary preview scene
 
     Returns:
         dict: {'FINISHED'}
@@ -210,11 +212,13 @@ def show_import_toolbar(context, imported_objects, imported_materials, materials
     _active_toolbar = ImportToolbar()
     _active_toolbar.init(fake_ctx)
 
-    # Set imported data
+    # Set imported data with scene references
     _active_toolbar.set_imported_data(
         imported_objects,
         imported_materials,
-        materials_before_import
+        materials_before_import,
+        original_scene=original_scene,
+        temp_scene=temp_scene
     )
 
     # Set up callbacks

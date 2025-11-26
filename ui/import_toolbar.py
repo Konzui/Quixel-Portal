@@ -1412,6 +1412,8 @@ class ImportToolbar:
         self.imported_objects = []
         self.imported_materials = []
         self.materials_before_import = set()
+        self.original_scene = None  # Reference to original scene
+        self.temp_scene = None  # Reference to temporary preview scene
         self.lod_levels = []  # List of available LOD levels
         self.selected_min_lod = None  # Currently selected min LOD level
         self.selected_max_lod = 5  # Default max LOD is LOD5
@@ -2217,17 +2219,21 @@ class ImportToolbar:
 
         print("✅ Import cleanup complete")
 
-    def set_imported_data(self, objects, materials, materials_before):
+    def set_imported_data(self, objects, materials, materials_before, original_scene=None, temp_scene=None):
         """Store references to imported data for cleanup.
 
         Args:
             objects: List of imported Blender objects
             materials: List of created materials
             materials_before: Set of material names before import
+            original_scene: Optional reference to original scene
+            temp_scene: Optional reference to temporary preview scene
         """
         self.imported_objects = objects
         self.imported_materials = materials
         self.materials_before_import = materials_before
+        self.original_scene = original_scene
+        self.temp_scene = temp_scene
 
     def set_lod_levels(self, lod_levels):
         """Set available LOD levels and update dropdown.
