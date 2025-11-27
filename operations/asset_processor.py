@@ -383,15 +383,16 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
 
 def cleanup_unused_materials(materials_before_import, imported_objects=None):
     """Clean up unused materials that were created during FBX import.
-    
+
     Removes materials like 'MatID_1', 'MatID_2', etc. that are created by the FBX importer.
-    
+    ONLY removes materials that were created during THIS import, not existing ones.
+
     Args:
         materials_before_import: Set of material names that existed before import
         imported_objects: Optional list of objects that were imported (for more aggressive cleanup)
     """
     print(f"\n  🧹 CLEANING UP TEMPORARY MATERIALS:")
-    
+
     # Pattern to match temporary materials created by FBX importer
     temp_material_patterns = [
         re.compile(r'^MatID_\d+', re.IGNORECASE),
@@ -399,20 +400,29 @@ def cleanup_unused_materials(materials_before_import, imported_objects=None):
         re.compile(r'^Material\.\d+$', re.IGNORECASE),
         re.compile(r'^Material$', re.IGNORECASE),
     ]
-    
+
     removed_count = 0
-    
-    # Iterate through ALL materials in the scene
-    for mat in list(bpy.data.materials):
-        mat_name = mat.name
-        
+
+    # Get current materials
+    materials_after_import = set(bpy.data.materials.keys())
+
+    # Find materials created during this import
+    new_materials = materials_after_import - materials_before_import
+
+    # Iterate through ONLY newly created materials
+    for mat_name in new_materials:
+        if mat_name not in bpy.data.materials:
+            continue
+
+        mat = bpy.data.materials[mat_name]
+
         # Check if it matches temporary material patterns
         is_temp_material = any(pattern.match(mat_name) for pattern in temp_material_patterns)
-        
+
         if not is_temp_material:
             continue
-        
-        # Try to remove it
+
+        # This is a temp material created during THIS import - safe to remove
         try:
             if mat.users == 0:
                 bpy.data.materials.remove(mat, do_unlink=True)
@@ -426,11 +436,11 @@ def cleanup_unused_materials(materials_before_import, imported_objects=None):
                 removed_count += 1
         except Exception as e:
             print(f"    ⚠️  Failed to remove material '{mat_name}': {e}")
-    
+
     if removed_count > 0:
         print(f"    ✅ Cleaned up {removed_count} temporary material(s)")
     else:
-        print(f"    ℹ️  No temporary materials found")
+        print(f"    ℹ️  No temporary materials found to clean up")
 
 
 def process_asset_directory(asset_dir):

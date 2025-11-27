@@ -40,7 +40,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-left: 4px;
+  padding-left: 8px;
   -webkit-app-region: no-drag;
 }
 
@@ -82,6 +82,111 @@ body {
 .dropdown-arrow {
   width: 24px;
   height: 24px;
+}
+
+/* Website Selector */
+.website-selector {
+  position: relative;
+}
+
+.website-selector-button {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px 4px 8px;
+  background: transparent;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  color: #e0e0e0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  height: 32px;
+  width: 128px;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.website-selector-button .website-icon {
+  flex-shrink: 0;
+}
+
+.website-selector-button #website-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.website-selector-button .website-dropdown-arrow {
+  flex-shrink: 0;
+}
+
+.website-selector-button:hover {
+  background: #2F2F2F;
+  border-color: #383838;
+}
+
+.website-selector-button:active {
+  background: #2F2F2F;
+  border-color: #383838;
+  transform: scale(0.98);
+}
+
+.website-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+#website-name {
+  user-select: none;
+}
+
+.website-dropdown-arrow {
+  width: 24px;
+  height: 24px;
+  opacity: 0.7;
+}
+
+/* Website Dropdown Menu - Hidden (using native menu instead) */
+.website-dropdown {
+  display: none;
+}
+
+.website-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #e0e0e0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.website-option:hover {
+  background: #3A3A3A;
+}
+
+.website-option:active {
+  background: #404040;
+  transform: scale(0.98);
+}
+
+.website-option-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 
 /* Navigation Buttons */

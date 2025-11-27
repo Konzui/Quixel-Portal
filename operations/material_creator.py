@@ -14,20 +14,24 @@ from ..utils.naming import find_json_file
 
 def create_material_from_textures(material_name, textures, context):
     """Create a material from texture paths and return it.
-    
+
+    If a material with the same name already exists, it will be reused instead of creating a new one.
+    This allows multiple imports of the same asset to share materials.
+
     Args:
         material_name: Name for the material
         textures: Dictionary of texture paths by type: {'albedo': path, 'roughness': path, ...}
         context: Blender context
-        
+
     Returns:
-        bpy.types.Material: Created material object
+        bpy.types.Material: Created or existing material object
     """
-    # Check if material already exists
+    # Check if material already exists - if so, reuse it
     if material_name in bpy.data.materials:
         mat = bpy.data.materials[material_name]
-        bpy.data.materials.remove(mat, do_unlink=True)
-    
+        print(f"  ♻️  Reusing existing material: {material_name}")
+        return mat
+
     # Create new material
     mat = bpy.data.materials.new(name=material_name)
     mat.use_nodes = True
@@ -299,25 +303,25 @@ def create_surface_material(asset_dir, context):
     
     # Find all texture files
     texture_files = find_texture_files(asset_dir)
-    
+
     if not texture_files:
         print(f"  ⚠️ No texture files found in {asset_dir}")
         return False
-    
-    # Check if material already exists
+
+    # Check if material already exists - if so, reuse it
     if material_name in bpy.data.materials:
         mat = bpy.data.materials[material_name]
-        bpy.data.materials.remove(mat, do_unlink=True)
-    
-    # Organize textures by type
-    textures = {}
-    for tex_file in texture_files:
-        tex_type = identify_texture_type(tex_file.stem)
-        if tex_type:
-            textures[tex_type] = tex_file
-    
-    # Create material
-    mat = create_material_from_textures(material_name, textures, context)
+        print(f"  ♻️  Reusing existing surface material: {material_name}")
+    else:
+        # Organize textures by type
+        textures = {}
+        for tex_file in texture_files:
+            tex_type = identify_texture_type(tex_file.stem)
+            if tex_type:
+                textures[tex_type] = tex_file
+
+        # Create material
+        mat = create_material_from_textures(material_name, textures, context)
     
     # Assign material to selected objects if any are selected
     selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']

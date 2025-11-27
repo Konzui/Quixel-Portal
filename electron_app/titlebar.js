@@ -1,5 +1,4 @@
 // Get elements
-const appMenuBtn = document.getElementById('app-menu-btn');
 const backBtn = document.getElementById('back-btn');
 const forwardBtn = document.getElementById('forward-btn');
 const reloadBtn = document.getElementById('reload-btn');
@@ -12,61 +11,19 @@ const pageTitle = document.getElementById('page-title');
 const pageTitleWrapper = document.getElementById('page-title-wrapper');
 const titlebar = document.getElementById('titlebar');
 
+// Website selector elements
+const websiteSelectorBtn = document.getElementById('website-selector-btn');
+const websiteDropdown = document.getElementById('website-dropdown');
+const websiteIcon = document.getElementById('website-icon');
+const websiteName = document.getElementById('website-name');
+const websiteOptions = document.querySelectorAll('.website-option');
+
 // Store current URL and title
 let currentURL = '';
 let originalTitle = '';
 
-// Menu state tracking
-let isMenuOpen = false;
-let lastMenuClickTime = 0;
-const MENU_TOGGLE_DELAY = 300; // ms - time window for toggle detection
-
-// App menu button - toggle behavior
-appMenuBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  
-  const now = Date.now();
-  const timeSinceLastClick = now - lastMenuClickTime;
-  
-  // If menu was just opened (within toggle delay), treat this as a close action
-  if (isMenuOpen && timeSinceLastClick < MENU_TOGGLE_DELAY) {
-    isMenuOpen = false;
-    lastMenuClickTime = 0;
-    // Menu will close automatically, we just track the state
-    return;
-  }
-  
-  // Menu is closed or enough time has passed, open it
-  isMenuOpen = true;
-  lastMenuClickTime = now;
-  const rect = appMenuBtn.getBoundingClientRect();
-  window.electronAPI.showAppMenu(rect.left, rect.bottom);
-  
-  // Reset menu state after menu interaction time (menu auto-closes on outside click)
-  setTimeout(() => {
-    isMenuOpen = false;
-    lastMenuClickTime = 0;
-  }, 500);
-});
-
-// Close menu when clicking anywhere in the titlebar (outside the menu button)
-titlebar.addEventListener('click', (e) => {
-  // Don't close if clicking on the menu button itself (handled above)
-  if (e.target.closest('#app-menu-btn')) {
-    return;
-  }
-
-  // Don't close if clicking on the page title wrapper (handled separately)
-  if (e.target.closest('#page-title-wrapper')) {
-    return;
-  }
-
-  // Close menu if it's open
-  if (isMenuOpen) {
-    isMenuOpen = false;
-    lastMenuClickTime = 0;
-  }
-}, true); // Use capture phase to catch clicks early
+// Store current website selection
+let currentWebsite = 'quixel'; // Default to Quixel
 
 // Navigation buttons
 backBtn.addEventListener('click', () => {
@@ -82,8 +39,32 @@ reloadBtn.addEventListener('click', () => {
 });
 
 homeBtn.addEventListener('click', () => {
-  window.electronAPI.navigateHome();
+  window.electronAPI.navigateHome(currentWebsite);
 });
+
+// Website selector - show native menu
+websiteSelectorBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const rect = websiteSelectorBtn.getBoundingClientRect();
+  window.electronAPI.showWebsiteMenu(rect.left, rect.bottom);
+});
+
+// Listen for website changes from main process
+if (window.electronAPI.onWebsiteChanged) {
+  window.electronAPI.onWebsiteChanged((event, website) => {
+    // Update current website
+    currentWebsite = website;
+
+    // Update UI
+    if (website === 'quixel') {
+      websiteIcon.src = 'assets/icons/quixel_24.png';
+      websiteName.textContent = 'Quixel';
+    } else if (website === 'polyhaven') {
+      websiteIcon.src = 'assets/icons/polyhaven_24.svg';
+      websiteName.textContent = 'Polyhaven';
+    }
+  });
+}
 
 // Downloads button
 downloadsBtn.addEventListener('click', () => {

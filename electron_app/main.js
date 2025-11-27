@@ -9,9 +9,21 @@ let browserView;
 let tray = null;
 let isQuitting = false;
 let splashWindow = null;
+let websiteDropdownWindow = null;
+let submenuWindow = null;
+let currentSubmenuType = null;
 
 // Store the Blender instance ID passed from command-line
 let blenderInstanceId = null;
+
+// Store current website selection
+let currentWebsite = 'quixel'; // Default to Quixel
+
+// Website URLs
+const WEBSITE_URLS = {
+  quixel: 'https://quixel.com/megascans/home',
+  polyhaven: 'https://polyhaven.com/all'
+};
 
 // Debug flag - set to true to enable verbose logging
 const DEBUG_MODE = false;
@@ -2547,30 +2559,10 @@ function createWindow() {
 
   async function loadQuixelWithAuthCheck() {
     try {
-      // Get all cookies for quixel.com domain
-      const cookies = await ses.cookies.get({ domain: '.quixel.com' });
-
-      // Check if 'auth' cookie exists (this indicates user is logged in)
-      const authCookie = cookies.find(c => c.name === 'auth');
-
-      if (authCookie) {
-        isInitialAuthCheck = false;
-
-        // User is logged in, load homepage
-        browserView.webContents.loadURL('https://quixel.com/megascans/home');
-      } else {
-        // Use detected sign-in URL if available, otherwise use fallback
-        if (signInURL) {
-          isInitialAuthCheck = false;
-          browserView.webContents.loadURL(signInURL);
-        } else {
-          // Keep flag true so we hide the page during detection
-          isInitialAuthCheck = true;
-
-          // Load homepage to detect the sign-in URL
-          browserView.webContents.loadURL('https://quixel.com/megascans/home');
-        }
-      }
+      // Always load homepage regardless of authentication status
+      // Let Quixel handle the login flow naturally without automatic redirection
+      isInitialAuthCheck = false;
+      browserView.webContents.loadURL('https://quixel.com/megascans/home');
     } catch (error) {
       isInitialAuthCheck = false;
 
@@ -3478,9 +3470,12 @@ ipcMain.on('navigate-forward', () => {
   }
 });
 
-ipcMain.on('navigate-home', () => {
+ipcMain.on('navigate-home', (event, website) => {
   if (browserView) {
-    browserView.webContents.loadURL('https://quixel.com/megascans/home');
+    // Use provided website or fall back to current selection
+    const targetWebsite = website || currentWebsite;
+    const url = WEBSITE_URLS[targetWebsite] || WEBSITE_URLS.quixel;
+    browserView.webContents.loadURL(url);
   }
 });
 
@@ -3501,6 +3496,14 @@ ipcMain.on('navigate-to', (event, url) => {
       const fullUrl = url.startsWith('http') ? url : `https://${url}`;
       browserView.webContents.loadURL(fullUrl);
     }
+  }
+});
+
+// Website selection
+ipcMain.on('set-current-website', (event, website) => {
+  if (website === 'quixel' || website === 'polyhaven') {
+    currentWebsite = website;
+    console.log(`🌐 Current website changed to: ${website}`);
   }
 });
 
@@ -3703,6 +3706,219 @@ ipcMain.on('show-app-menu', (event, x, y) => {
     x: Math.round(x),
     y: Math.round(y)
   });
+});
+
+// Show website selector dropdown (custom window)
+ipcMain.on('show-website-menu', (event, x, y) => {
+  // Close existing dropdown if open
+  if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+    websiteDropdownWindow.close();
+    websiteDropdownWindow = null;
+    return;
+  }
+
+  // Get main window position
+  const mainWindowBounds = mainWindow.getBounds();
+
+  // Calculate absolute screen position
+  // x, y are relative to the window content area
+  const screenX = mainWindowBounds.x + Math.round(x);
+  const screenY = mainWindowBounds.y + Math.round(y);
+
+  // Create custom dropdown window (wider to accommodate submenu)
+  websiteDropdownWindow = new BrowserWindow({
+    width: 420, // Width for main menu (180) + submenu (220) + gap
+    height: 400, // Taller to accommodate the largest submenu without scrolling
+    x: screenX,
+    y: screenY,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    parent: mainWindow,
+    webPreferences: {
+      preload: path.join(__dirname, 'website-dropdown-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  // Remove menu bar
+  websiteDropdownWindow.setMenuBarVisibility(false);
+
+  // Load the dropdown HTML
+  websiteDropdownWindow.loadFile('website-dropdown.html');
+
+  // Auto-hide when it loses focus
+  websiteDropdownWindow.on('blur', () => {
+    // Small delay to prevent immediate close when clicking between elements
+    setTimeout(() => {
+      if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+        websiteDropdownWindow.close();
+        websiteDropdownWindow = null;
+      }
+    }, 100);
+  });
+
+  // Clean up when closed
+  websiteDropdownWindow.on('closed', () => {
+    websiteDropdownWindow = null;
+  });
+
+  // Close dropdown when clicking on main window (including BrowserView)
+  const closeDropdownOnClick = () => {
+    if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+      websiteDropdownWindow.close();
+      websiteDropdownWindow = null;
+    }
+  };
+
+  // Listen for clicks on main window
+  mainWindow.webContents.once('before-input-event', closeDropdownOnClick);
+
+  // Listen for clicks on BrowserView
+  if (browserView) {
+    browserView.webContents.once('before-input-event', closeDropdownOnClick);
+  }
+});
+
+// Handle website selection from dropdown
+ipcMain.on('select-website', (event, website) => {
+  currentWebsite = website;
+
+  // Update UI in main window
+  if (mainWindow) {
+    mainWindow.webContents.send('website-changed', website);
+  }
+
+  // Navigate to selected website
+  if (browserView) {
+    browserView.webContents.loadURL(WEBSITE_URLS[website]);
+  }
+});
+
+// Close dropdown window
+ipcMain.on('close-dropdown', () => {
+  if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+    websiteDropdownWindow.close();
+    websiteDropdownWindow = null;
+  }
+});
+
+// Note: Submenu is now handled within the dropdown window itself
+// The show-submenu, request-submenu-data, and close-submenu handlers are no longer needed
+
+// Execute submenu action
+ipcMain.on('execute-submenu-action', (event, action) => {
+  // Close dropdown window
+  if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+    websiteDropdownWindow.close();
+    websiteDropdownWindow = null;
+  }
+
+  // Execute the action
+  switch (action) {
+    // File actions
+    case 'file-new-window':
+      createWindow();
+      break;
+    case 'file-close-window':
+      if (mainWindow) mainWindow.close();
+      break;
+    case 'file-hide-to-tray':
+      if (mainWindow) mainWindow.hide();
+      break;
+    case 'file-quit':
+      isQuitting = true;
+      if (browserView && browserView.webContents.session) {
+        browserView.webContents.session.flushStorageData();
+      }
+      app.quit();
+      break;
+
+    // Edit actions
+    case 'edit-undo':
+      if (browserView) browserView.webContents.undo();
+      break;
+    case 'edit-redo':
+      if (browserView) browserView.webContents.redo();
+      break;
+    case 'edit-cut':
+      if (browserView) browserView.webContents.cut();
+      break;
+    case 'edit-copy':
+      if (browserView) browserView.webContents.copy();
+      break;
+    case 'edit-paste':
+      if (browserView) browserView.webContents.paste();
+      break;
+    case 'edit-select-all':
+      if (browserView) browserView.webContents.selectAll();
+      break;
+
+    // View actions
+    case 'view-reload':
+      if (browserView) browserView.webContents.reload();
+      break;
+    case 'view-force-reload':
+      if (browserView) browserView.webContents.reloadIgnoringCache();
+      break;
+    case 'view-reset-zoom':
+      if (browserView) browserView.webContents.setZoomLevel(0);
+      break;
+    case 'view-zoom-in':
+      if (browserView) {
+        const currentZoom = browserView.webContents.getZoomLevel();
+        browserView.webContents.setZoomLevel(currentZoom + 0.5);
+      }
+      break;
+    case 'view-zoom-out':
+      if (browserView) {
+        const currentZoom = browserView.webContents.getZoomLevel();
+        browserView.webContents.setZoomLevel(currentZoom - 0.5);
+      }
+      break;
+    case 'view-toggle-fullscreen':
+      if (mainWindow) {
+        mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      }
+      break;
+
+    // Navigation actions
+    case 'nav-back':
+      if (browserView && browserView.webContents.canGoBack()) {
+        browserView.webContents.goBack();
+      }
+      break;
+    case 'nav-forward':
+      if (browserView && browserView.webContents.canGoForward()) {
+        browserView.webContents.goForward();
+      }
+      break;
+    case 'nav-home':
+      if (browserView) {
+        browserView.webContents.loadURL(WEBSITE_URLS[currentWebsite]);
+      }
+      break;
+
+    // Developer actions
+    case 'dev-toggle-devtools':
+      if (browserView) {
+        browserView.webContents.toggleDevTools();
+      }
+      break;
+    case 'dev-element-inspector':
+      enableElementInspector();
+      break;
+    case 'dev-clear-cache-reload':
+      if (browserView) {
+        browserView.webContents.session.clearCache().then(() => {
+          browserView.webContents.reload();
+        });
+      }
+      break;
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════

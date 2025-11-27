@@ -7,10 +7,13 @@ contextBridge.exposeInMainWorld(
     // Navigation
     navigateBack: () => ipcRenderer.send('navigate-back'),
     navigateForward: () => ipcRenderer.send('navigate-forward'),
-    navigateHome: () => ipcRenderer.send('navigate-home'),
+    navigateHome: (website) => ipcRenderer.send('navigate-home', website),
     navigateReload: () => ipcRenderer.send('navigate-reload'),
     navigateTo: (url) => ipcRenderer.send('navigate-to', url),
     getNavigationState: () => ipcRenderer.invoke('get-navigation-state'),
+
+    // Website selection
+    setCurrentWebsite: (website) => ipcRenderer.send('set-current-website', website),
 
     // Window controls
     windowMinimize: () => ipcRenderer.send('window-minimize'),
@@ -22,11 +25,13 @@ contextBridge.exposeInMainWorld(
 
     // Menu
     showAppMenu: (x, y) => ipcRenderer.send('show-app-menu', x, y),
+    showWebsiteMenu: (x, y) => ipcRenderer.send('show-website-menu', x, y),
 
     // Events
     onNavigationStarted: (callback) => ipcRenderer.on('navigation-started', callback),
     onNavigationFinished: (callback) => ipcRenderer.on('navigation-finished', callback),
     onPageTitleUpdated: (callback) => ipcRenderer.on('page-title-updated', callback),
+    onWebsiteChanged: (callback) => ipcRenderer.on('website-changed', callback),
 
     // Downloads Panel
     toggleDownloadsPanel: () => ipcRenderer.send('toggle-downloads-panel'),

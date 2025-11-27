@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Website Selector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="website-dropdown.css">
+</head>
+<body>
+  <div class="dropdown-container">
+    <div class="dropdown-menu">
+      <!-- Sites Section -->
+      <div class="menu-section">
+        <div class="section-header">Sites</div>
+        <button class="menu-option" data-website="quixel">
+          <img src="assets/icons/quixel_24.png" class="menu-option-icon" alt="Quixel">
+          <span>Quixel</span>
+        </button>
+        <button class="menu-option" data-website="polyhaven">
+          <img src="assets/icons/polyhaven_24.svg" class="menu-option-icon" alt="Polyhaven">
+          <span>Polyhaven</span>
+          <span class="badge">SOON</span>
+        </button>
+      </div>
+
+      <!-- Divider -->
+      <div class="menu-divider"></div>
+
+      <!-- Menu Section -->
+      <div class="menu-section">
+        <div class="section-header">Menu</div>
+        <button class="menu-option submenu-trigger" data-submenu="file">
+          <span>File</span>
+          <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="menu-option submenu-trigger" data-submenu="edit">
+          <span>Edit</span>
+          <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="menu-option submenu-trigger" data-submenu="view">
+          <span>View</span>
+          <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="menu-option submenu-trigger" data-submenu="navigation">
+          <span>Navigation</span>
+          <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="menu-option submenu-trigger" data-submenu="developer">
+          <span>Developer</span>
+          <svg class="submenu-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Submenu (rendered to the right) -->
+    <div id="submenu-panel" class="submenu-panel">
+      <!-- Submenu items will be populated dynamically -->
+    </div>
+  </div>
+  <script src="website-dropdown.js"></script>
+</body>
+</html>

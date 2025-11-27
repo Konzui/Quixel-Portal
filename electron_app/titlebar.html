@@ -13,14 +13,28 @@
   <!-- Custom Titlebar -->
   <div id="titlebar">
     <div class="titlebar-drag-region">
-      <!-- Left Section: Logo Menu -->
+      <!-- Left Section -->
       <div class="titlebar-left">
-        <button id="app-menu-btn" class="menu-button" title="Menu">
-          <div class="logo-container">
-            <img src="assets/icons/logo_24.svg" class="logo-icon" alt="Logo">
-            <img src="assets/icons/dropdown_24.svg" class="dropdown-arrow" alt="Dropdown">
+        <!-- Website Selector -->
+        <div class="website-selector">
+          <button id="website-selector-btn" class="website-selector-button" title="Switch Website">
+            <img id="website-icon" src="assets/icons/quixel_24.png" class="website-icon" alt="Quixel">
+            <span id="website-name">Quixel</span>
+            <img src="assets/icons/dropdown_24.svg" class="website-dropdown-arrow" alt="Dropdown">
+          </button>
+
+          <!-- Dropdown Menu -->
+          <div id="website-dropdown" class="website-dropdown">
+            <button class="website-option" data-website="quixel">
+              <img src="assets/icons/quixel_24.png" class="website-option-icon" alt="Quixel">
+              <span>Quixel</span>
+            </button>
+            <button class="website-option" data-website="polyhaven">
+              <img src="assets/icons/polyhaven_24.svg" class="website-option-icon" alt="Polyhaven">
+              <span>Polyhaven</span>
+            </button>
           </div>
-        </button>
+        </div>
 
         <!-- Navigation Buttons -->
         <div class="nav-buttons">
