@@ -133,6 +133,14 @@ menuOptions.forEach(option => {
       window.electronAPI.closeDropdown();
       return;
     }
+
+    // Check if it's a settings button
+    const action = option.dataset.action;
+    if (action === 'open-settings') {
+      window.electronAPI.executeSubmenuAction('settings-open');
+      window.electronAPI.closeDropdown();
+      return;
+    }
   });
 
   // Hover handler for submenu triggers
@@ -180,6 +188,43 @@ submenuPanel.addEventListener('mouseleave', () => {
 window.addEventListener('blur', () => {
   window.electronAPI.closeDropdown();
 });
+
+// Listen for clicks anywhere in the dropdown window
+// If click is outside the actual menu content (on empty/transparent area), close dropdown
+document.addEventListener('mousedown', (e) => {
+  // Get the dropdown menu and submenu elements
+  const dropdownMenu = document.querySelector('.dropdown-menu');
+  const submenuPanel = document.getElementById('submenu-panel');
+  
+  // Check if click is on the body or html (empty space in the window)
+  // The window is 420px wide but menu is only ~180px, so clicks on the right side should close
+  const clickedElement = e.target;
+  
+  // If click is directly on body or html (empty space), close dropdown
+  if (clickedElement === document.body || clickedElement === document.documentElement) {
+    e.preventDefault();
+    e.stopPropagation();
+    window.electronAPI.closeDropdown();
+    return;
+  }
+  
+  // Check if click is inside the actual menu elements
+  const isInMenu = dropdownMenu && dropdownMenu.contains(clickedElement);
+  const isInSubmenu = submenuPanel && submenuPanel.contains(clickedElement);
+  
+  // Check if click is on the container itself (but not on menu/submenu)
+  // This catches clicks on the transparent/empty area of the container
+  const dropdownContainer = document.querySelector('.dropdown-container');
+  const isOnContainer = dropdownContainer && clickedElement === dropdownContainer;
+  
+  // If click is not in menu or submenu, close dropdown
+  // This handles clicks on empty space (right side of window) or on container background
+  if (!isInMenu && !isInSubmenu) {
+    e.preventDefault();
+    e.stopPropagation();
+    window.electronAPI.closeDropdown();
+  }
+}, true); // Use capture phase to catch clicks early
 
 // Prevent default context menu
 document.addEventListener('contextmenu', (e) => {

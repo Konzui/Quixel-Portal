@@ -160,23 +160,32 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     original_scene = context.scene
     original_collection = context.collection
 
-    print(f"\n{'='*80}")
-    print(f"🎬 SCENE SETUP: CREATING TEMPORARY PREVIEW SCENE")
-    print(f"{'='*80}")
-    print(f"  📌 Original scene: {original_scene.name}")
+    # Only create preview scene if Glacier setup is enabled
+    temp_scene = None
+    if glacier_setup:
+        print(f"\n{'='*80}")
+        print(f"🎬 SCENE SETUP: CREATING TEMPORARY PREVIEW SCENE")
+        print(f"{'='*80}")
+        print(f"  📌 Original scene: {original_scene.name}")
 
-    # Create temporary preview scene for import
-    temp_scene = create_preview_scene(context)
+        # Create temporary preview scene for import
+        temp_scene = create_preview_scene(context)
 
-    # Switch to temporary scene for import
-    if not switch_to_scene(context, temp_scene):
-        print(f"❌ Failed to switch to preview scene")
-        return {'CANCELLED'}
+        # Switch to temporary scene for import
+        if not switch_to_scene(context, temp_scene):
+            print(f"❌ Failed to switch to preview scene")
+            return {'CANCELLED'}
 
-    # Update context after scene switch
-    context = bpy.context
+        # Update context after scene switch
+        context = bpy.context
 
-    print(f"  ✅ Now working in temporary preview scene: {temp_scene.name}")
+        print(f"  ✅ Now working in temporary preview scene: {temp_scene.name}")
+    else:
+        print(f"\n{'='*80}")
+        print(f"🎬 SCENE SETUP: IMPORTING DIRECTLY TO CURRENT SCENE")
+        print(f"{'='*80}")
+        print(f"  📌 Current scene: {original_scene.name}")
+        print(f"  ⚠️ Glacier setup disabled - no preview scene will be created")
 
     # Track all imported objects and materials for toolbar cleanup
     all_imported_objects_tracker = []
@@ -188,8 +197,9 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     if not fbx_files:
         print(f"⚠️ No FBX files found")
         # Clean up temp scene before returning
-        switch_to_scene(bpy.context, original_scene)
-        cleanup_preview_scene(temp_scene)
+        if temp_scene:
+            switch_to_scene(bpy.context, original_scene)
+            cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
     
     print(f"📦 Found {len(fbx_files)} FBX file(s) to import:")
@@ -211,8 +221,9 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     if not import_results:
         print(f"❌ Failed to import any FBX files")
         # Clean up temp scene before returning
-        switch_to_scene(bpy.context, original_scene)
-        cleanup_preview_scene(temp_scene)
+        if temp_scene:
+            switch_to_scene(bpy.context, original_scene)
+            cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
     
     # NEW STEP: Correct object names before grouping
@@ -481,30 +492,15 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
     # Check if Glacier Setup is enabled
     if not glacier_setup:
-        # Import directly without showing toolbar - just transfer to original scene
+        # Import directly without showing toolbar - assets are already in original scene
         print(f"\n{'='*80}")
         print(f"✅ IMPORT COMPLETE - GLACIER SETUP DISABLED")
         print(f"{'='*80}")
         print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
         print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
         print(f"  📡 Electron notified of successful import")
-        print(f"  ⚡ Asset imported directly without toolbar (Glacier Setup disabled)")
-
-        # Transfer assets to original scene automatically
-        transferred_objects = transfer_assets_to_original_scene(
-            temp_scene,
-            original_scene,
-            all_imported_objects_tracker,
-            all_imported_materials_tracker
-        )
-
-        # Switch back to original scene
-        switch_to_scene(bpy.context, original_scene)
-
-        # Delete temporary preview scene
-        cleanup_preview_scene(temp_scene)
-
-        print(f"  🎬 Assets transferred to original scene: {original_scene.name}")
+        print(f"  ⚡ Asset imported directly to current scene (no preview scene)")
+        print(f"  🎬 Assets are in scene: {original_scene.name}")
 
         return {'FINISHED'}
 

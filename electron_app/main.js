@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const extractZip = require('extract-zip');
+const generateInjectionScript = require('./injectors');
 
 let mainWindow;
 let browserView;
@@ -12,6 +13,7 @@ let splashWindow = null;
 let websiteDropdownWindow = null;
 let submenuWindow = null;
 let currentSubmenuType = null;
+let settingsWindow = null;
 
 // Store the Blender instance ID passed from command-line
 let blenderInstanceId = null;
@@ -61,1763 +63,21 @@ if (instanceIndex !== -1 && instanceIndex + 1 < args.length) {
 function injectDebugScript() {
   if (!browserView) return;
 
-  const debugScript = `
-    (function() {
-      // ═══════════════════════════════════════════════════════════════
-      // 🛡️ GLOBAL ERROR HANDLERS - Catch unhandled errors and promise rejections
-      // ═══════════════════════════════════════════════════════════════
-      
-      // Track if we're in a download attempt
-      window.downloadAttemptStartTime = null;
-      window.downloadTimeoutId = null;
-      
-      // Global error handler for unhandled errors
-      window.addEventListener('error', function(event) {
-        // Check if this error is related to API calls during download
-        if (window.downloadAttemptStartTime && event.error) {
-          const errorMessage = event.error.message || event.error.toString() || '';
-          const errorStack = event.error.stack || '';
-          
-          // Check for API error patterns
-          if (errorMessage.includes('Request failed with status code') ||
-              errorMessage.includes('status code 400') ||
-              errorMessage.includes('status code 401') ||
-              errorMessage.includes('status code 403') ||
-              errorMessage.includes('status code 404') ||
-              errorMessage.includes('status code 500') ||
-              errorMessage.includes('Cannot read properties of undefined') ||
-              errorStack.includes('Request failed')) {
-            
-            const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
-            if (timeSinceAttempt < 10000) {
-              // Clear timeout
-              if (window.downloadTimeoutId) {
-                clearTimeout(window.downloadTimeoutId);
-                window.downloadTimeoutId = null;
-              }
-              
-              // Trigger failure handler
-              if (window.onDownloadFailed) {
-                window.onDownloadFailed({
-                  url: window.location.href,
-                  error: 'API Error: ' + errorMessage
-                });
-              }
-              
-              // Reset tracking
-              window.downloadAttemptStartTime = null;
-            }
-          }
-        }
-      });
-      
-      // Global handler for unhandled promise rejections
-      window.addEventListener('unhandledrejection', function(event) {
-        if (window.downloadAttemptStartTime && event.reason) {
-          const errorMessage = event.reason.message || event.reason.toString() || '';
-          const errorStack = event.reason.stack || '';
-          
-          // Check for API error patterns
-          if (errorMessage.includes('Request failed with status code') ||
-              errorMessage.includes('status code 400') ||
-              errorMessage.includes('status code 401') ||
-              errorMessage.includes('status code 403') ||
-              errorMessage.includes('status code 404') ||
-              errorMessage.includes('status code 500') ||
-              errorMessage.includes('Cannot read properties of undefined') ||
-              errorStack.includes('Request failed')) {
-            
-            const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
-            if (timeSinceAttempt < 10000) {
-              // Clear timeout
-              if (window.downloadTimeoutId) {
-                clearTimeout(window.downloadTimeoutId);
-                window.downloadTimeoutId = null;
-              }
-              
-              // Trigger failure handler
-              if (window.onDownloadFailed) {
-                window.onDownloadFailed({
-                  url: window.location.href,
-                  error: 'API Error: ' + errorMessage
-                });
-              }
-              
-              // Reset tracking
-              window.downloadAttemptStartTime = null;
-              
-              // Prevent default error handling
-              event.preventDefault();
-            }
-          }
-        }
-      });
-      
-      // ═══════════════════════════════════════════════════════════════
-      // 🔒 API REQUEST INTERCEPTION & QUEUING - Prevent race condition
-      // ═══════════════════════════════════════════════════════════════
-      
-      // Debug flag - controls verbose logging (set to true to enable debug logs)
-      const DEBUG_AUTH = false;
-      
-      // Helper function for debug logging (only logs if DEBUG_AUTH is true)
-      function debugLog(...args) {
-        if (DEBUG_AUTH) {
-          console.log(...args);
-        }
-      }
-      
-      // Track authentication state
-      window.quixelAuthReady = false;
-      window.quixelAuthState = 'WAITING'; // WAITING, AUTHENTICATED, TIMEOUT
-      window.quixelRequestQueue = [];
-      window.quixelAuthCheckStartTime = Date.now();
-      window.quixelAuthDetectedTime = null;
-      window.quixelFirstApiRequestSent = false; // Track if we've sent a test request
-      window.quixelAuthPollingInterval = null; // Track auth polling interval
-      const AUTH_GRACE_PERIOD = 500; // 0.5 seconds grace period (very short, we poll actively)
-      const AUTH_TIMEOUT = 5000; // 5 seconds max wait
-      const AUTH_POLL_INTERVAL = 300; // Poll every 300ms for auth
-      
-      // Helper function to get timestamp with milliseconds
-      function getTimestamp() {
-        const now = Date.now();
-        const elapsed = now - window.quixelAuthCheckStartTime;
-        return '[' + now + 'ms] (+' + elapsed.toFixed(0) + 'ms)';
-      }
-      
-      debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔒 Starting API request interception and queuing system');
-      debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Grace period: ' + AUTH_GRACE_PERIOD + 'ms, Timeout: ' + AUTH_TIMEOUT + 'ms');
-      
-      // Function to check if a URL is an API endpoint that requires auth
-      function isApiEndpoint(url) {
-        if (!url) return false;
-        const apiPatterns = [
-          '/v1/',
-          '/api/v1/',
-          'accounts.quixel.com',
-          'mhc-api.quixel.com'
-        ];
-        return apiPatterns.some(pattern => url.includes(pattern));
-      }
-      
-      // Function to check if a URL is an auth endpoint (should NOT be queued)
-      function isAuthEndpoint(url) {
-        if (!url) return false;
-        const authPatterns = [
-          '/api/v1/users/',  // User info checks (e.g., /api/v1/users/konartworks@web.de)
-          '/api/v1/login',   // Login/refresh endpoints
-          '/v1/users/self', // User self endpoint
-          'accounts.quixel.com/api/v1/users/', // Account user endpoints
-          'accounts.quixel.com/api/v1/login'    // Account login endpoints
-        ];
-        return authPatterns.some(pattern => url.includes(pattern));
-      }
-      
-      // Function to check if a response indicates successful authentication
-      // NEW: Detect auth from ANY successful API response (200 status)
-      function isAuthSuccessResponse(url, status) {
-        // Any successful API response (200-299) indicates auth is working
-        if (!isApiEndpoint(url)) return false;
-        return status >= 200 && status < 300;
-      }
-      
-      // Function to actively poll for authentication
-      function startAuthPolling() {
-        if (window.quixelAuthReady || window.quixelAuthPollingInterval) {
-          return; // Already polling or auth ready
-        }
-        
-        debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔄 Starting active auth polling (every ' + AUTH_POLL_INTERVAL + 'ms)');
-        
-        window.quixelAuthPollingInterval = setInterval(() => {
-          if (window.quixelAuthReady) {
-            clearInterval(window.quixelAuthPollingInterval);
-            window.quixelAuthPollingInterval = null;
-            return;
-          }
-          
-          // Try a lightweight API endpoint to test auth
-          // Use a simple endpoint that should work if auth is ready
-          const testUrl = 'https://quixel.com/v1/frontPageContent?webPage=homepage';
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔍 Polling auth status...');
-          
-          const testXhr = new window._quixelOriginalXHR();
-          testXhr.open('GET', testUrl, true);
-          testXhr.addEventListener('readystatechange', function() {
-            // Early exit if auth became ready from another request
-            if (window.quixelAuthReady) {
-              clearInterval(window.quixelAuthPollingInterval);
-              window.quixelAuthPollingInterval = null;
-              return;
-            }
-            if (testXhr.readyState === 4) {
-              if (isAuthSuccessResponse(testUrl, testXhr.status)) {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS detected via polling! (status: ' + testXhr.status + ')');
-                clearInterval(window.quixelAuthPollingInterval);
-                window.quixelAuthPollingInterval = null;
-                releaseQueuedRequests('auth_success');
-              } else if (testXhr.status === 401) {
-                // Still not authenticated, continue polling
-                const elapsed = Date.now() - window.quixelAuthCheckStartTime;
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏳ Still waiting for auth... (elapsed: ' + elapsed.toFixed(0) + 'ms)');
-              }
-            }
-          });
-          testXhr.send();
-        }, AUTH_POLL_INTERVAL);
-      }
-      
-      // Function to release queued requests
-      function releaseQueuedRequests(reason) {
-        if (window.quixelAuthReady) {
-          // Suppress the warning - it's expected if multiple requests detect auth simultaneously
-          return;
-        }
-        
-        window.quixelAuthReady = true;
-        // Stop any active polling
-        if (window.quixelAuthPollingInterval) {
-          clearInterval(window.quixelAuthPollingInterval);
-          window.quixelAuthPollingInterval = null;
-        }
-        const queueLength = window.quixelRequestQueue.length;
-        const timeElapsed = Date.now() - window.quixelAuthCheckStartTime;
-        
-        // Update state based on reason
-        if (reason === 'auth_success') {
-          window.quixelAuthState = 'AUTHENTICATED';
-          window.quixelAuthDetectedTime = Date.now();
-          const totalTime = (window.quixelAuthDetectedTime - window.quixelAuthCheckStartTime).toFixed(2);
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Authentication SUCCESS detected! (Total time: ' + totalTime + 'ms) Releasing ' + queueLength + ' queued request(s)');
-        } else if (reason === 'timeout') {
-          window.quixelAuthState = 'TIMEOUT';
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏰ Grace period ended without auth confirmation (Total time: ' + timeElapsed.toFixed(2) + 'ms). Releasing ' + queueLength + ' queued request(s) anyway (timeout fallback)');
-        } else {
-          window.quixelAuthState = 'TIMEOUT';
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Releasing ' + queueLength + ' queued request(s) (' + (reason || 'unknown reason') + ', Total time: ' + timeElapsed.toFixed(2) + 'ms)');
-        }
-        
-        // Process all queued requests
-        window.quixelRequestQueue.forEach((queuedRequest, index) => {
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 📤 Releasing queued request #' + (index + 1) + ': ' + queuedRequest.url);
-          
-          if (queuedRequest.type === 'fetch') {
-            // Execute the original fetch
-            queuedRequest.originalFetch(queuedRequest.url, queuedRequest.options)
-              .then(response => {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Queued fetch completed: ' + queuedRequest.url + ' (status: ' + response.status + ')');
-                queuedRequest.resolve(response);
-              })
-              .catch(error => {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ❌ Queued fetch failed: ' + queuedRequest.url + ' - ' + error.message);
-                queuedRequest.reject(error);
-              });
-          } else if (queuedRequest.type === 'xhr') {
-            // Execute the queued XHR
-            // Note: open() was already called when queuing, so XHR is in OPENED state
-            // We just need to send it now
-            try {
-              // Remove queued flag
-              delete queuedRequest.xhr._quixelQueued;
-              
-              // Headers should already be set (we set them when queuing)
-              // But restore any additional headers that might have been set
-              if (queuedRequest.headers) {
-                Object.keys(queuedRequest.headers).forEach(header => {
-                  try {
-                    queuedRequest.xhr.setRequestHeader(header, queuedRequest.headers[header]);
-                  } catch (e) {
-                    // Header might already be set, ignore
-                  }
-                });
-              }
-              
-              // Restore event handlers
-              if (queuedRequest.onload) queuedRequest.xhr.onload = queuedRequest.onload;
-              if (queuedRequest.onerror) queuedRequest.xhr.onerror = queuedRequest.onerror;
-              if (queuedRequest.onreadystatechange) queuedRequest.xhr.onreadystatechange = queuedRequest.onreadystatechange;
-              
-              // No need to monitor auth success for queued requests - auth is already confirmed
-              // (We're releasing them because auth is ready)
-              
-              // Now send the request (XHR is already in OPENED state)
-              queuedRequest.xhr.send(queuedRequest.body);
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Queued XHR sent: ' + queuedRequest.url);
-            } catch (error) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ❌ Queued XHR failed: ' + queuedRequest.url + ' - ' + error.message);
-              if (queuedRequest.onerror) queuedRequest.onerror();
-            }
-          }
-        });
-        
-        // Clear the queue
-        window.quixelRequestQueue = [];
-      }
-      
-      // Monitor fetch responses to detect successful authentication
-      const originalFetch = window.fetch;
-      window.fetch = function(url, options) {
-        const fetchUrl = typeof url === 'string' ? url : url.url || url.toString();
-        
-        // Check if this is an API endpoint
-        if (isApiEndpoint(fetchUrl)) {
-          // If it's an auth endpoint, allow it through immediately and monitor response
-          if (isAuthEndpoint(fetchUrl)) {
-            debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔐 Auth endpoint detected, allowing immediately: ' + fetchUrl);
-            return originalFetch.apply(this, arguments).then(response => {
-              // Monitor for auth success
-              if (isAuthSuccessResponse(fetchUrl, response.status)) {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS! Detected 200 response from: ' + fetchUrl);
-                releaseQueuedRequests('auth_success');
-              } else if (response.status === 401) {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⚠️ Auth endpoint returned 401 (not authenticated yet): ' + fetchUrl);
-                // Start polling for auth
-                startAuthPolling();
-              } else {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ℹ️ Auth endpoint response: ' + fetchUrl + ' (status: ' + response.status + ')');
-              }
-              return response;
-            }).catch(error => {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ❌ Auth endpoint error: ' + fetchUrl + ' - ' + error.message);
-              throw error;
-            });
-          }
-          
-          // Regular API endpoint - check if we should queue it
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔍 Intercepted API fetch: ' + fetchUrl);
-          
-          // If auth is ready, proceed normally (no monitoring needed)
-          if (window.quixelAuthReady) {
-            debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Auth ready, allowing fetch: ' + fetchUrl);
-            return originalFetch.apply(this, arguments);
-          }
-          
-          // Allow first API request through immediately to test auth
-          if (!window.quixelFirstApiRequestSent) {
-            window.quixelFirstApiRequestSent = true;
-            debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🧪 First API request - allowing through to test auth: ' + fetchUrl);
-            return originalFetch.apply(this, arguments).then(response => {
-              // Early exit if auth became ready from another request
-              if (window.quixelAuthReady) return response;
-              if (isAuthSuccessResponse(fetchUrl, response.status)) {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS detected from first fetch response! ' + fetchUrl + ' (status: ' + response.status + ')');
-                releaseQueuedRequests('auth_success');
-              } else if (response.status === 401) {
-                debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⚠️ First request returned 401 (auth not ready), will queue subsequent requests');
-                // Start polling for auth
-                startAuthPolling();
-              }
-              return response;
-            });
-          }
-          
-            // Check if grace period has passed
-            const timeSinceStart = Date.now() - window.quixelAuthCheckStartTime;
-            if (timeSinceStart >= AUTH_GRACE_PERIOD) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Grace period passed (' + timeSinceStart.toFixed(0) + 'ms), allowing fetch: ' + fetchUrl);
-              // Check auth one more time before allowing
-              if (window.quixelAuthReady) {
-                return originalFetch.apply(this, arguments);
-              }
-              // Monitor response for auth success only if not ready yet
-              return originalFetch.apply(this, arguments).then(response => {
-                if (window.quixelAuthReady) return response; // Early exit if auth became ready
-                if (isAuthSuccessResponse(fetchUrl, response.status)) {
-                  debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS detected from fetch response! ' + fetchUrl + ' (status: ' + response.status + ')');
-                  releaseQueuedRequests('auth_success');
-                }
-                return response;
-              });
-            }
-          
-          // Queue the request
-          const remainingTime = (AUTH_GRACE_PERIOD - timeSinceStart).toFixed(0);
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 📥 Queuing fetch request: ' + fetchUrl + ' (waiting for auth, ' + remainingTime + 'ms remaining)');
-          
-          return new Promise((resolve, reject) => {
-            window.quixelRequestQueue.push({
-              type: 'fetch',
-              url: fetchUrl,
-              options: options,
-              originalFetch: originalFetch.bind(window),
-              resolve: resolve,
-              reject: reject
-            });
-          });
-        }
-        
-        // Non-API requests proceed normally
-        return originalFetch.apply(this, arguments);
-      };
-      
-      // Monitor XMLHttpRequest to detect successful authentication
-      const OriginalXHR = window.XMLHttpRequest;
-      
-      // Store OriginalXHR globally for polling function
-      window._quixelOriginalXHR = OriginalXHR;
-      
-      window.XMLHttpRequest = function() {
-        const xhr = new OriginalXHR();
-        const originalOpen = xhr.open;
-        const originalSend = xhr.send;
-        const originalSetRequestHeader = xhr.setRequestHeader;
-        
-        let requestUrl = null;
-        let requestMethod = null;
-        let requestAsync = true;
-        let requestUser = null;
-        let requestPassword = null;
-        let requestHeaders = {};
-        let requestBody = null;
-        let onloadHandler = null;
-        let onerrorHandler = null;
-        let onreadystatechangeHandler = null;
-        
-        // Intercept open
-        xhr.open = function(method, url, async, user, password) {
-          requestMethod = method;
-          requestUrl = url;
-          requestAsync = async !== undefined ? async : true;
-          requestUser = user;
-          requestPassword = password;
-          
-          // Check if this is an API endpoint
-          if (isApiEndpoint(url)) {
-            // If it's an auth endpoint, allow it through immediately and monitor response
-            if (isAuthEndpoint(url)) {
-              // Skip if auth already ready
-              if (window.quixelAuthReady) {
-                return originalOpen.call(this, method, url, async, user, password);
-              }
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔐 Auth endpoint detected, allowing immediately: ' + method + ' ' + url);
-              const result = originalOpen.call(this, method, url, async, user, password);
-              // Add monitoring for auth success (only once, use flag to prevent duplicates)
-              if (!xhr._quixelAuthListenerAdded) {
-                xhr._quixelAuthListenerAdded = true;
-                const authListener = function() {
-                  // Early exit checks - must be first thing in listener
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  if (xhr.readyState !== 4) return;
-                  // Double-check auth state before processing
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  
-                  if (isAuthSuccessResponse(url, xhr.status)) {
-                    // Final check before logging
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS! Detected 200 response from: ' + url);
-                    releaseQueuedRequests('auth_success');
-                    // Remove listener after detecting auth
-                    xhr.removeEventListener('readystatechange', authListener);
-                  } else if (xhr.status === 401) {
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⚠️ Auth endpoint returned 401 (not authenticated yet): ' + url);
-                    // Start polling for auth
-                    startAuthPolling();
-                  } else {
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ℹ️ Auth endpoint response: ' + url + ' (status: ' + xhr.status + ')');
-                  }
-                };
-                xhr.addEventListener('readystatechange', authListener);
-              }
-              return result;
-            }
-            
-            // Regular API endpoint
-            debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🔍 Intercepted API XHR: ' + method + ' ' + url);
-            
-            // If auth is ready, proceed normally (no monitoring needed)
-            if (window.quixelAuthReady) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Auth ready, allowing XHR: ' + url);
-              return originalOpen.call(this, method, url, async, user, password);
-            }
-            
-            // Allow first API request through immediately to test auth
-            if (!window.quixelFirstApiRequestSent) {
-              window.quixelFirstApiRequestSent = true;
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🧪 First API request - allowing through to test auth: ' + method + ' ' + url);
-              const result = originalOpen.call(this, method, url, async, user, password);
-              // Monitor response for auth success (only once, use flag to prevent duplicates)
-              if (!xhr._quixelAuthListenerAdded) {
-                xhr._quixelAuthListenerAdded = true;
-                const authListener = function() {
-                  // Early exit checks - must be first thing in listener
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  if (xhr.readyState !== 4) return;
-                  // Double-check auth state before processing
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  
-                  if (isAuthSuccessResponse(url, xhr.status)) {
-                    // Final check before logging
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS detected from first XHR response! ' + url + ' (status: ' + xhr.status + ')');
-                    releaseQueuedRequests('auth_success');
-                    // Remove listener after detecting auth
-                    xhr.removeEventListener('readystatechange', authListener);
-                  } else if (xhr.status === 401) {
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⚠️ First request returned 401 (auth not ready), will queue subsequent requests');
-                    // Start polling for auth
-                    startAuthPolling();
-                  }
-                };
-                xhr.addEventListener('readystatechange', authListener);
-              }
-              return result;
-            }
-            
-            // Check if grace period has passed
-            const timeSinceStart = Date.now() - window.quixelAuthCheckStartTime;
-            if (timeSinceStart >= AUTH_GRACE_PERIOD) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Grace period passed (' + timeSinceStart.toFixed(0) + 'ms), allowing XHR: ' + url);
-              // Check auth one more time before allowing
-              if (window.quixelAuthReady) {
-                return originalOpen.call(this, method, url, async, user, password);
-              }
-              const result = originalOpen.call(this, method, url, async, user, password);
-              // Only monitor if auth is not ready yet and listener not already added
-              if (!window.quixelAuthReady && !xhr._quixelAuthListenerAdded) {
-                xhr._quixelAuthListenerAdded = true;
-                const authListener = function() {
-                  // Early exit checks - must be first thing in listener
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  if (xhr.readyState !== 4) return;
-                  // Double-check auth state before processing
-                  if (window.quixelAuthReady) {
-                    xhr.removeEventListener('readystatechange', authListener);
-                    return;
-                  }
-                  
-                  if (isAuthSuccessResponse(url, xhr.status)) {
-                    // Final check before logging
-                    if (window.quixelAuthReady) {
-                      xhr.removeEventListener('readystatechange', authListener);
-                      return;
-                    }
-                    debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 🎉 Auth SUCCESS detected from XHR response! ' + url + ' (status: ' + xhr.status + ')');
-                    releaseQueuedRequests('auth_success');
-                    // Remove listener after detecting auth
-                    xhr.removeEventListener('readystatechange', authListener);
-                  }
-                };
-                xhr.addEventListener('readystatechange', authListener);
-              }
-              return result;
-            }
-            
-            // Queue the request - but we need to call open() to put XHR in OPENED state
-            // Otherwise send() will fail with "state must be OPENED" error
-            const remainingTime = (AUTH_GRACE_PERIOD - timeSinceStart).toFixed(0);
-            debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 📥 Queuing XHR request: ' + url + ' (waiting for auth, ' + remainingTime + 'ms remaining)');
-            isQueued = true;
-            // Mark that this request is queued
-            xhr._quixelQueued = true;
-            // Actually call open() to put XHR in OPENED state (required for send() to work)
-            // But we'll intercept send() to queue it instead
-            return originalOpen.call(this, method, url, async, user, password);
-          }
-          
-          // Non-API requests proceed normally
-          return originalOpen.call(this, method, url, async, user, password);
-        };
-        
-        // Intercept setRequestHeader
-        xhr.setRequestHeader = function(header, value) {
-          // If request is queued, store headers but also set them (XHR is in OPENED state)
-          if (requestUrl && isApiEndpoint(requestUrl) && xhr._quixelQueued && !window.quixelAuthReady) {
-            requestHeaders[header] = value;
-            // Also set the header on the XHR since it's already opened
-            return originalSetRequestHeader.call(this, header, value);
-          }
-          return originalSetRequestHeader.call(this, header, value);
-        };
-        
-        // Intercept send
-        xhr.send = function(body) {
-          requestBody = body;
-          
-          if (requestUrl && isApiEndpoint(requestUrl)) {
-            // If it's an auth endpoint, it should have already been opened and allowed through
-            // Just send it normally (monitoring was added in open())
-            if (isAuthEndpoint(requestUrl)) {
-              return originalSend.call(this, body);
-            }
-            
-            // Regular API endpoint
-            // If auth is ready, proceed normally (no monitoring needed)
-            if (window.quixelAuthReady) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Auth ready, sending XHR: ' + requestUrl);
-              return originalSend.call(this, body);
-            }
-            
-            // If this is the first request and it was already opened, just send it
-            // (monitoring was already added in open())
-            // Note: isQueued is set in open() if the request was queued
-            if (window.quixelFirstApiRequestSent) {
-              // Check if request was queued by checking if open was called
-              // If we're here and it's the first request, it means open() already executed
-              return originalSend.call(this, body);
-            }
-            
-            // Check if grace period has passed
-            const timeSinceStart = Date.now() - window.quixelAuthCheckStartTime;
-            if (timeSinceStart >= AUTH_GRACE_PERIOD) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Grace period passed, sending XHR: ' + requestUrl);
-              // Check auth one more time
-              if (window.quixelAuthReady) {
-                return originalSend.call(this, body);
-              }
-              // Need to call open first if we queued it
-              originalOpen.call(this, requestMethod, requestUrl, requestAsync, requestUser, requestPassword);
-              // Restore headers
-              Object.keys(requestHeaders).forEach(header => {
-                originalSetRequestHeader.call(this, header, requestHeaders[header]);
-              });
-              // No monitoring needed - auth should be ready or will be detected elsewhere
-              // (Listener was already added in open() if needed)
-              return originalSend.call(this, body);
-            }
-            
-            // Check if this request was queued
-            if (xhr._quixelQueued && !window.quixelAuthReady) {
-              // Request was queued, store it properly
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' 📥 Queuing XHR send: ' + requestUrl);
-              
-              // Store event handlers (they may have been set after open())
-              if (xhr.onload) onloadHandler = xhr.onload;
-              if (xhr.onerror) onerrorHandler = xhr.onerror;
-              if (xhr.onreadystatechange) onreadystatechangeHandler = xhr.onreadystatechange;
-              
-              // Store all event listeners that were added
-              const listeners = [];
-              // Note: We can't easily get all event listeners, so we'll restore the ones we know about
-              
-              window.quixelRequestQueue.push({
-                type: 'xhr',
-                url: requestUrl,
-                method: requestMethod,
-                async: requestAsync,
-                user: requestUser,
-                password: requestPassword,
-                headers: requestHeaders,
-                body: body,
-                xhr: xhr,
-                onload: onloadHandler,
-                onerror: onerrorHandler,
-                onreadystatechange: onreadystatechangeHandler,
-                listeners: listeners
-              });
-              
-              // Don't send yet - wait for auth
-              return;
-            }
-            
-            // If request was queued but auth is now ready, send it
-            if (xhr._quixelQueued && window.quixelAuthReady) {
-              debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ Auth ready, sending previously queued XHR: ' + requestUrl);
-              // Remove queued flag
-              delete xhr._quixelQueued;
-              return originalSend.call(this, body);
-            }
-          }
-          
-          // Non-API requests proceed normally
-          return originalSend.call(this, body);
-        };
-        
-        return xhr;
-      };
-      
-      // Timeout fallback - release requests after timeout even if auth not confirmed
-      setTimeout(() => {
-        if (!window.quixelAuthReady) {
-          const timeSinceStart = Date.now() - window.quixelAuthCheckStartTime;
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏰ Maximum timeout reached (' + timeSinceStart.toFixed(2) + 'ms), releasing queued requests anyway');
-          releaseQueuedRequests('timeout');
-        }
-      }, AUTH_TIMEOUT);
-      
-      // Grace period fallback - release requests after grace period
-      setTimeout(() => {
-        if (!window.quixelAuthReady) {
-          const timeSinceStart = Date.now() - window.quixelAuthCheckStartTime;
-          debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ⏱️ Grace period ended (' + timeSinceStart.toFixed(2) + 'ms), releasing queued requests (auth not yet confirmed)');
-          releaseQueuedRequests('timeout');
-        }
-      }, AUTH_GRACE_PERIOD);
-      
-      debugLog('[QUIXEL AUTH] ' + getTimestamp() + ' ✅ API interception system initialized');
-      
-      // Create bridge for folder selection and downloads
-      window.electronBridge = {
-        selectDownloadPath: async function() {
-          return new Promise((resolve) => {
-            const currentPath = window.quixelDownloadPath || localStorage.getItem('quixelDownloadPath') || 'C:\\\\Users\\\\' + ((typeof process !== 'undefined' && process.env.USERNAME) || 'User') + '\\\\Documents\\\\Quixel Portal';
-            const newPath = prompt('Enter download path (or paste full path):', currentPath);
-            if (newPath && newPath !== currentPath) {
-              resolve(newPath);
-            } else {
-              resolve(null);
-            }
-          });
-        },
-
-        // Open file explorer at the specified path
-        openFileExplorer: function(filePath) {
-          // Use console.log with special prefix that main process can listen to
-          console.log('QUIXEL_OPEN_EXPLORER:' + filePath);
-        }
-      };
-
-      // Inject CSS for instant custom background on download buttons + hide annoying popup
-      const styleElement = document.createElement('style');
-      styleElement.id = 'quixel-download-style';
-      styleElement.textContent = \`
-        /* Target download buttons - will apply instantly when they appear */
-        button.Button___1mkoh.Button--fullWidth___2subI {
-          background: #0C8CE9 !important;
-          background-color: #0C8CE9 !important;
-          color: white !important;
-          border: 2px solid #0C8CE9 !important;
-          border-color: #0C8CE9 !important;
-        }
-
-        /* Hide the annoying "A NEW HOME FOR MEGASCANS" popup */
-        div.modalContent___1Vd1b {
-          display: none !important;
-        }
-
-        /* Also hide the modal overlay/backdrop */
-        [class*="modalOverlay"],
-        [class*="Modal"],
-        div[class*="modal"][class*="Overlay"] {
-          display: none !important;
-        }
-
-        /* Hide the annoying "Megascans have a new home on Fab" banner */
-        div.css-1uaj9x {
-          display: none !important;
-        }
-
-        /* Also target parent container if needed */
-        div.css-1ymlmsw {
-          display: none !important;
-        }
-
-        /* Linear progress bar styles */
-        .quixel-linear-progress-container {
-          position: absolute;
-          bottom: -2px;
-          left: 0;
-          width: 100%;
-          height: 2px;
-          background: rgba(255, 255, 255, 0.1);
-          overflow: visible;
-        }
-
-        .quixel-linear-progress-fill {
-          height: 100%;
-          background: rgba(255, 255, 255, 0.8);
-          width: 0%;
-          transition: width 0.3s ease;
-        }
-
-        .quixel-linear-progress-text {
-          position: absolute;
-          right: 0;
-          bottom: 4px;
-          font-size: 11px;
-          color: rgba(255, 255, 255, 0.7);
-          font-weight: 500;
-          pointer-events: none;
-          white-space: nowrap;
-        }
-
-        /* Download notification styles */
-        #quixel-download-notification {
-          position: fixed;
-          bottom: 20px;
-          left: 20px;
-          background: #1a1a1a;
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 6px;
-          padding: 10px 14px;
-          padding-right: 32px;
-          min-width: 250px;
-          max-width: 350px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-          z-index: 10000;
-          opacity: 0;
-          transform: translateY(20px);
-          transition: opacity 0.3s ease, transform 0.3s ease;
-          pointer-events: none;
-        }
-
-        #quixel-download-notification.show {
-          opacity: 1;
-          transform: translateY(0);
-          pointer-events: auto;
-        }
-        
-        /* Close button for notification */
-        #quixel-download-notification .notification-close {
-          position: absolute;
-          top: 8px;
-          right: 8px;
-          width: 20px;
-          height: 20px;
-          cursor: pointer;
-          opacity: 0.6;
-          transition: opacity 0.2s;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border: none;
-          background: transparent;
-          padding: 0;
-        }
-        
-        #quixel-download-notification .notification-close:hover {
-          opacity: 1;
-        }
-        
-        #quixel-download-notification .notification-close::before,
-        #quixel-download-notification .notification-close::after {
-          content: '';
-          position: absolute;
-          width: 12px;
-          height: 2px;
-          background: rgba(255, 255, 255, 0.8);
-          border-radius: 1px;
-        }
-        
-        #quixel-download-notification .notification-close::before {
-          transform: rotate(45deg);
-        }
-        
-        #quixel-download-notification .notification-close::after {
-          transform: rotate(-45deg);
-        }
-
-        #quixel-download-notification .notification-title {
-          color: rgba(255, 255, 255, 0.9);
-          font-size: 13px;
-          font-weight: 500;
-          margin-bottom: 4px;
-        }
-
-        #quixel-download-notification .notification-message {
-          color: rgba(255, 255, 255, 0.7);
-          font-size: 12px;
-          margin-bottom: 4px;
-        }
-
-        #quixel-download-notification .notification-path {
-          color: rgba(255, 255, 255, 0.8);
-          font-size: 11px;
-          cursor: pointer;
-          text-decoration: underline;
-          text-decoration-color: rgba(255, 255, 255, 0.3);
-          transition: text-decoration-color 0.2s;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        #quixel-download-notification .notification-path:hover {
-          text-decoration-color: rgba(255, 255, 255, 0.6);
-        }
-
-        /* Notification with thumbnail */
-        #quixel-download-notification .notification-content-with-thumb {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-
-        #quixel-download-notification .notification-thumbnail {
-          width: 48px;
-          height: 48px;
-          object-fit: cover;
-          border-radius: 4px;
-          flex-shrink: 0;
-        }
-
-        #quixel-download-notification .notification-text {
-          flex: 1;
-          min-width: 0;
-        }
-
-        /* Animated dots for "Importing..." */
-        @keyframes dotAnimation {
-          0%, 20% { content: '.'; }
-          40% { content: '..'; }
-          60%, 100% { content: '...'; }
-        }
-
-        .animated-dots::after {
-          content: '...';
-          animation: dotAnimation 1.5s infinite;
-        }
-      \`;
-      document.head.appendChild(styleElement);
-
-      // Function to aggressively remove the Megascans popup
-      function removeMegascansPopup() {
-        let removed = false;
-
-        // Remove the modal popup
-        const modalContent = document.querySelector('div.modalContent___1Vd1b');
-        if (modalContent) {
-          // Try to find and remove the parent modal
-          let parent = modalContent.parentElement;
-          while (parent && parent !== document.body) {
-            if (parent.className && (
-                parent.className.includes('modal') ||
-                parent.className.includes('Modal') ||
-                parent.className.includes('overlay') ||
-                parent.className.includes('Overlay')
-            )) {
-              parent.remove();
-              removed = true;
-              break;
-            }
-            parent = parent.parentElement;
-          }
-          // If no modal parent found, just remove the content
-          if (!removed && modalContent.parentElement) {
-            modalContent.remove();
-            removed = true;
-          }
-        }
-
-        // Remove the Fab banner
-        const fabBanner = document.querySelector('div.css-1uaj9x');
-        if (fabBanner) {
-          fabBanner.remove();
-          removed = true;
-        }
-
-        // Also check for parent container
-        const fabBannerParent = document.querySelector('div.css-1ymlmsw');
-        if (fabBannerParent) {
-          fabBannerParent.remove();
-          removed = true;
-        }
-
-        return removed;
-      }
-
-      // Remove popup and banner immediately if they exist
-      removeMegascansPopup();
-
-      // Monitor DOM for popup appearing and remove it
-      const popupObserver = new MutationObserver(() => {
-        removeMegascansPopup();
-      });
-
-      popupObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      // Also check periodically for the first 5 seconds (catches late-loading popups)
-      let popupCheckCount = 0;
-      const popupCheckInterval = setInterval(() => {
-        removeMegascansPopup();
-        popupCheckCount++;
-        if (popupCheckCount >= 10) { // 10 checks * 500ms = 5 seconds
-          clearInterval(popupCheckInterval);
-        }
-      }, 500);
-
-
-      // Auto sign-in redirect on startup (one-time check)
-      function checkAndRedirectToSignIn() {
-        // Only run once
-        if (window.signInCheckComplete) {
-          return;
-        }
-
-        const signInButton = document.querySelector('button.css-xwv3p2');
-        if (signInButton && signInButton.textContent.toLowerCase().includes('sign in')) {
-          // Listen for URL changes to see where it redirects
-          const originalPushState = history.pushState;
-          history.pushState = function(...args) {
-            return originalPushState.apply(this, arguments);
-          };
-
-          const originalReplaceState = history.replaceState;
-          history.replaceState = function(...args) {
-            return originalReplaceState.apply(this, arguments);
-          };
-
-          // Click the sign-in button
-          signInButton.click();
-
-          // Check URL after click
-          setTimeout(() => {
-            const newUrl = window.location.href;
-            // Send the sign-in URL to console with special prefix for main process to detect
-            console.log('QUIXEL_SIGNIN_URL:' + newUrl);
-          }, 100);
-
-          setTimeout(() => {
-            const newUrl = window.location.href;
-            // Send again in case it changed
-            console.log('QUIXEL_SIGNIN_URL:' + newUrl);
-          }, 500);
-
-          setTimeout(() => {
-            const newUrl = window.location.href;
-
-            // Final check
-            console.log('QUIXEL_SIGNIN_URL:' + newUrl);
-          }, 1000);
-
-          // Mark as complete so we don't check again
-          window.signInCheckComplete = true;
-        }
-      }
-
-      // Check for sign-in button after a short delay (let page load first)
-      setTimeout(() => {
-        checkAndRedirectToSignIn();
-      }, 1000);
-
-      // Also check a few more times in case the button loads late
-      setTimeout(() => {
-        checkAndRedirectToSignIn();
-      }, 2000);
-
-      setTimeout(() => {
-        checkAndRedirectToSignIn();
-      }, 3000);
-
-      // Debounce helper to prevent duplicate searches
-      let searchTimeout = null;
-      let lastSearchTime = 0;
-
-      // Function to add linear progress indicator below download button
-      function addProgressBarToButton(button) {
-        // Check if progress indicator already exists
-        if (button.querySelector('.quixel-linear-progress-container')) {
-          return;
-        }
-
-        // Make button position relative if not already
-        if (window.getComputedStyle(button).position === 'static') {
-          button.style.position = 'relative';
-        }
-
-        // Create linear progress container
-        const progressContainer = document.createElement('div');
-        progressContainer.className = 'quixel-linear-progress-container';
-        
-        // Create progress fill bar
-        const progressFill = document.createElement('div');
-        progressFill.className = 'quixel-linear-progress-fill';
-        
-        // Create progress text (percentage)
-        const progressText = document.createElement('div');
-        progressText.className = 'quixel-linear-progress-text';
-        progressText.textContent = '0%';
-        
-        progressContainer.appendChild(progressFill);
-        progressContainer.appendChild(progressText);
-        button.appendChild(progressContainer);
-        button.dataset.quixelDownloading = 'true';
-      }
-
-      // Function to update linear progress
-      function updateProgressBar(button, progress) {
-        const progressFill = button.querySelector('.quixel-linear-progress-fill');
-        const progressText = button.querySelector('.quixel-linear-progress-text');
-        
-        if (progressFill) {
-          progressFill.style.width = progress + '%';
-        }
-        
-        if (progressText) {
-          progressText.textContent = Math.round(progress) + '%';
-        }
-      }
-
-      // Function to remove progress bar
-      function removeProgressBar(button) {
-        const progressContainer = button.querySelector('.quixel-linear-progress-container');
-        if (progressContainer) {
-          progressContainer.remove();
-        }
-        delete button.dataset.quixelDownloading;
-      }
-
-      // Silent button detection (no visual debugging)
-      window.findDownloadButton = function(skipDebounce = false) {
-        // Debounce: only search once per 500ms
-        const now = Date.now();
-        if (!skipDebounce && now - lastSearchTime < 500) {
-          return;
-        }
-        lastSearchTime = now;
-
-        // Strategy: Look for buttons with "download" or "export" text
-        const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-        const foundButtons = buttons.filter(btn => {
-          const text = btn.textContent.toLowerCase();
-          return text.includes('download') || text.includes('export');
-        });
-
-        if (foundButtons.length > 0) {
-          // Store references and modify button text
-          if (!window.downloadButtons) window.downloadButtons = [];
-          foundButtons.forEach((btn, index) => {
-            window.downloadButtons[index] = btn;
-
-            // Skip if already processed
-            if (btn.dataset.quixelProcessed) return;
-            btn.dataset.quixelProcessed = 'true';
-
-            // Change "Download" to "Import to Blender"
-            if (btn.textContent.toLowerCase().includes('download')) {
-              // Try multiple selectors to find the text element
-              let textElement = btn.querySelector('.label') ||
-                               btn.querySelector('span') ||
-                               btn.querySelector('div') ||
-                               btn;
-
-              // Find the deepest text node that contains "download"
-              const allTextElements = [textElement];
-              const children = textElement.querySelectorAll('*');
-              children.forEach(child => {
-                if (child.textContent.toLowerCase().includes('download')) {
-                  allTextElements.push(child);
-                }
-              });
-
-              // Use the element with the shortest text content (most specific)
-              textElement = allTextElements.reduce((shortest, current) => {
-                return current.textContent.length < shortest.textContent.length ? current : shortest;
-              }, textElement);
-
-              // Change the text
-              if (textElement.textContent.toLowerCase().trim().includes('download')) {
-                textElement.textContent = 'Import to Blender';
-
-                // Store reference to the text element
-                btn.dataset.textElement = 'true';
-                btn._textElement = textElement;
-              }
-
-              // Store original text for later restoration
-              if (!btn.dataset.originalText) {
-                btn.dataset.originalText = 'Import to Blender';
-              }
-
-              // Add click handler - use CAPTURE phase (true) to run BEFORE Quixel's handlers
-              // This allows us to check if asset exists locally and prevent API call
-              const clickHandler = function(e) {
-                // Extract asset ID from URL to check if asset exists locally
-                const urlParams = new URLSearchParams(window.location.search);
-                const assetId = urlParams.get('assetId') || urlParams.get('id');
-                
-                // Also try to extract from path (e.g., /assets/12345)
-                let assetIdFromPath = null;
-                const pathMatch = window.location.pathname.match(/\\/(?:assets|asset)\\/([^/]+)/);
-                if (pathMatch) {
-                  assetIdFromPath = pathMatch[1];
-                }
-                
-                const finalAssetId = assetId || assetIdFromPath;
-                
-                // If we have an asset ID, check if it exists locally before allowing API call
-                if (finalAssetId) {
-                  // Check if we already have a cached result for this asset
-                  const cacheKey = 'quixel_asset_' + finalAssetId;
-                  const cachedResult = window[cacheKey];
-                  
-                  if (cachedResult !== undefined) {
-                    // We have a cached result
-                    if (cachedResult && cachedResult.path) {
-                      // Asset exists locally! Prevent API call and import directly
-                      e.preventDefault();
-                      e.stopPropagation();
-                      e.stopImmediatePropagation();
-                      
-                      // Change button text to "Importing"
-                      if (btn._textElement) {
-                        btn._textElement.textContent = 'Importing';
-                        btn._textElement.classList.add('animated-dots');
-                      }
-                      
-                      // Add progress bar
-                      addProgressBarToButton(btn);
-                      window.currentDownloadButton = btn;
-                      
-                      // Trigger import directly
-                      console.log('QUIXEL_IMPORT_EXISTING_ASSET:' + cachedResult.path);
-                      return; // Exit early, don't allow normal flow
-                    } else {
-                      // Asset doesn't exist, allow normal flow
-                      // Don't prevent default, let it continue
-                    }
-                  } else {
-                    // No cached result - prevent default while we check
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    
-                    // Request check from Electron
-                    window.quixelAssetCheckInProgress = true;
-                    window.quixelAssetExists = false;
-                    window.quixelAssetPath = null;
-                    console.log('QUIXEL_CHECK_ASSET_EXISTS:' + finalAssetId);
-                    
-                    // Wait for Electron to respond (it will set window.quixelAssetExists)
-                    const checkInterval = setInterval(() => {
-                      if (!window.quixelAssetCheckInProgress) {
-                        clearInterval(checkInterval);
-                        
-                        // Cache the result
-                        const result = window.quixelAssetExists ? { path: window.quixelAssetPath } : false;
-                        window[cacheKey] = result;
-                        
-                        if (window.quixelAssetExists && window.quixelAssetPath) {
-                          // Asset exists locally! Import directly
-                          if (btn._textElement) {
-                            btn._textElement.textContent = 'Importing';
-                            btn._textElement.classList.add('animated-dots');
-                          }
-                          
-                          addProgressBarToButton(btn);
-                          window.currentDownloadButton = btn;
-                          
-                          // Trigger import
-                          console.log('QUIXEL_IMPORT_EXISTING_ASSET:' + window.quixelAssetPath);
-                        } else {
-                          // Asset doesn't exist, manually trigger the button click to allow normal flow
-                          // Create a synthetic click event that will bubble normally
-                          const syntheticEvent = new MouseEvent('click', {
-                            bubbles: true,
-                            cancelable: true,
-                            view: window
-                          });
-                          // Remove our handler temporarily, dispatch event, then re-add
-                          const clickHandler = btn._quixelClickHandler;
-                          if (clickHandler) {
-                            btn.removeEventListener('click', clickHandler, true);
-                            btn.dispatchEvent(syntheticEvent);
-                            // Re-add handler after a short delay
-                            setTimeout(() => {
-                              btn.addEventListener('click', clickHandler, true);
-                            }, 100);
-                          }
-                        }
-                      }
-                    }, 10); // Check every 10ms
-                    
-                    // Timeout after 200ms - if no response, assume asset doesn't exist
-                    setTimeout(() => {
-                      if (window.quixelAssetCheckInProgress) {
-                        clearInterval(checkInterval);
-                        window.quixelAssetCheckInProgress = false;
-                        window[cacheKey] = false;
-                        
-                        // Manually trigger click to allow normal flow
-                        const clickHandler = btn._quixelClickHandler;
-                        if (clickHandler) {
-                          const syntheticEvent = new MouseEvent('click', {
-                            bubbles: true,
-                            cancelable: true,
-                            view: window
-                          });
-                          btn.removeEventListener('click', clickHandler, true);
-                          btn.dispatchEvent(syntheticEvent);
-                          setTimeout(() => {
-                            btn.addEventListener('click', clickHandler, true);
-                          }, 100);
-                        }
-                      }
-                    }, 200);
-                    
-                    return; // Exit early while checking
-                  }
-                }
-
-                // Normal flow: Change button text to "Downloading" with animated dots
-                if (btn._textElement) {
-                  btn._textElement.textContent = 'Downloading';
-                  btn._textElement.classList.add('animated-dots');
-                }
-
-                // Add progress bar to button (will be updated by main process callbacks)
-                setTimeout(() => {
-                  addProgressBarToButton(btn);
-
-                  // Store reference to this button for progress updates
-                  window.currentDownloadButton = btn;
-
-                  // Track download attempt start time for timeout mechanism
-                  window.downloadAttemptStartTime = Date.now();
-
-                  // Notify main process that download attempt started (via console message)
-                  console.log('QUIXEL_DOWNLOAD_ATTEMPT_START:' + window.downloadAttemptStartTime);
-
-                  // Set up timeout - if no download starts within 10 seconds, trigger failure
-                  if (window.downloadTimeoutId) {
-                    clearTimeout(window.downloadTimeoutId);
-                  }
-
-                  window.downloadTimeoutId = setTimeout(() => {
-                    // Check if download actually started (will be cleared by onDownloadProgress/onDownloadComplete)
-                    if (window.currentDownloadButton === btn && window.downloadAttemptStartTime) {
-                      const timeSinceAttempt = Date.now() - window.downloadAttemptStartTime;
-                      if (timeSinceAttempt >= 10000) {
-                        // Timeout reached - no download started
-                        // Trigger failure handler
-                        if (window.onDownloadFailed) {
-                          window.onDownloadFailed({
-                            url: window.location.href,
-                            error: 'Download timeout: No download started. The server may be experiencing issues or the request was invalid.'
-                          });
-                        }
-
-                        // Reset button state
-                        if (btn._textElement) {
-                          btn._textElement.textContent = 'Import to Blender';
-                          btn._textElement.classList.remove('animated-dots');
-                        }
-
-                        // Remove progress bar
-                        const progressContainer = btn.querySelector('.quixel-linear-progress-container');
-                        if (progressContainer) {
-                          progressContainer.remove();
-                        }
-
-                        // Reset tracking
-                        window.downloadAttemptStartTime = null;
-                        window.downloadTimeoutId = null;
-                        window.currentDownloadButton = null;
-                      }
-                    }
-                  }, 10000); // 10 second timeout
-                }, 100);
-              };
-              
-              // Store handler reference on button for later removal
-              btn._quixelClickHandler = clickHandler;
-              btn.addEventListener('click', clickHandler, true); // Use capture phase
-            }
-          });
-        }
-
-        return foundButtons;
-      };
-
-      // Monitor URL changes for asset details
-      let lastUrl = window.location.href;
-      const urlObserver = new MutationObserver(() => {
-        if (lastUrl !== window.location.href) {
-          lastUrl = window.location.href;
-
-          // Check if asset detail opened
-          const urlParams = new URLSearchParams(window.location.search);
-          const assetId = urlParams.get('assetId');
-          if (assetId) {
-            // Search immediately, then again after longer delay to ensure React has finished rendering
-            findDownloadButton(true);
-            setTimeout(() => findDownloadButton(), 500);
-          }
-        }
-      });
-
-      urlObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-
-      // Monitor DOM changes to detect new download buttons (silent)
-      const domObserver = new MutationObserver((mutations) => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(() => {
-          let shouldSearch = false;
-
-          mutations.forEach(mutation => {
-            if (mutation.addedNodes.length > 0) {
-              mutation.addedNodes.forEach(node => {
-                if (node.nodeType === 1) {
-                  const isDownloadButton = node.matches && (
-                    node.matches('button') || node.matches('a') || node.matches('[role="button"]')
-                  ) && node.textContent.toLowerCase().includes('download');
-
-                  const isModal = node.matches && (
-                    node.matches('[role="dialog"]') || node.matches('[class*="modal"]') || node.matches('[class*="popup"]')
-                  );
-
-                  if (isModal || isDownloadButton) {
-                    shouldSearch = true;
-                  }
-                }
-              });
-            }
-          });
-
-          if (shouldSearch) {
-            findDownloadButton();
-          }
-        }, 200); // Increased from 100ms to 200ms to reduce processing during rapid DOM changes
-      });
-
-      domObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      // Function to inject custom download path settings
-      function injectDownloadPathSettings() {
-        // Check if already injected
-        if (document.getElementById('quixel-portal-path-settings-wrapper')) {
-          return;
-        }
-
-        // Find the Model Settings container (container___3YaWn container-large___Lz64p)
-        const modelSettingsContainer = document.querySelector('div.container___3YaWn.container-large___Lz64p');
-        if (!modelSettingsContainer) {
-          return; // Container doesn't exist yet
-        }
-
-        // Get default download path - try localStorage first, then use default
-        const savedPath = localStorage.getItem('quixelDownloadPath');
-        const defaultPath = savedPath || window.quixelDownloadPath || 'C:\\\\Users\\\\User\\\\Documents\\\\Quixel Portal';
-
-        // Create custom settings section HTML with header
-        const pathSettingsHTML = \`
-          <div id="quixel-portal-path-settings-wrapper">
-            <!-- Header matching Model Settings style -->
-            <div class="content___1WFTo tab-header___36tMb" style="margin-bottom: 16px;">
-              <div class="heading___gFcc4">Download Settings</div>
-            </div>
-
-            <!-- Path input row -->
-            <div class="subContainer___2ALnu" style="margin-right: 16px; padding-left: 24px; padding-right: 24px;">
-              <div class="left___2S9Lx">
-                <span class="label___2h7yz">Download Path</span>
-              </div>
-              <div class="right___38KOV" style="position: relative; flex: 1;">
-                <input
-                  id="quixel-download-path-input"
-                  type="text"
-                  value="\${defaultPath}"
-                  style="
-                    width: 100%;
-                    height: 32px;
-                    background: #1a1a1a;
-                    border: 1px solid transparent;
-                    border-radius: 4px;
-                    padding: 0 40px 0 12px;
-                    color: white;
-                    font-family: inherit;
-                    font-size: 13px;
-                    outline: none;
-                    box-sizing: border-box;
-                    transition: border-color 0.2s;
-                  "
-                  placeholder="Choose download location..."
-                  onfocus="this.style.borderColor='rgba(255, 255, 255, 0.2)'"
-                  onblur="this.style.borderColor='transparent'"
-                />
-                <div
-                  id="quixel-browse-path-btn"
-                  style="
-                    position: absolute;
-                    right: 8px;
-                    top: 50%;
-                    transform: translateY(-50%);
-                    cursor: pointer;
-                    width: 24px;
-                    height: 24px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    opacity: 0.7;
-                    transition: opacity 0.2s;
-                  "
-                  onmouseover="this.style.opacity='1'"
-                  onmouseout="this.style.opacity='0.7'"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M10 4H4C2.89543 4 2 4.89543 2 6V18C2 19.1046 2.89543 20 4 20H20C21.1046 20 22 19.1046 22 18V8C22 6.89543 21.1046 6 20 6H12L10 4Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
-              </div>
-            </div>
-          </div>
-        \`;
-
-        // Insert at the beginning of the Model Settings container
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = pathSettingsHTML;
-        const pathSettings = tempDiv.firstElementChild;
-
-        modelSettingsContainer.insertBefore(pathSettings, modelSettingsContainer.firstChild);
-
-        // Add event listeners
-        const browseBtn = document.getElementById('quixel-browse-path-btn');
-        const pathInput = document.getElementById('quixel-download-path-input');
-
-        if (browseBtn && pathInput) {
-          browseBtn.addEventListener('click', async () => {
-            // Use the electron bridge to select path (shows prompt dialog)
-            if (window.electronBridge && window.electronBridge.selectDownloadPath) {
-              const selectedPath = await window.electronBridge.selectDownloadPath();
-              if (selectedPath) {
-                pathInput.value = selectedPath;
-                window.quixelDownloadPath = selectedPath;
-                localStorage.setItem('quixelDownloadPath', selectedPath);
-              }
-            }
-          });
-
-          // Save path when input changes
-          pathInput.addEventListener('change', () => {
-            window.quixelDownloadPath = pathInput.value;
-            localStorage.setItem('quixelDownloadPath', pathInput.value);
-          });
-
-          // Load saved path from localStorage
-          const savedPath = localStorage.getItem('quixelDownloadPath');
-          if (savedPath) {
-            pathInput.value = savedPath;
-            window.quixelDownloadPath = savedPath;
-          }
-        }
-      }
-
-      // Monitor for settings dialog opening
-      const settingsObserver = new MutationObserver(() => {
-        injectDownloadPathSettings();
-      });
-
-      settingsObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      // Try to inject immediately if settings are already open
-      injectDownloadPathSettings();
-
-      // Create notification element if it doesn't exist
-      function ensureNotificationElement() {
-        let notification = document.getElementById('quixel-download-notification');
-        if (!notification) {
-          notification = document.createElement('div');
-          notification.id = 'quixel-download-notification';
-          document.body.appendChild(notification);
-        }
-        return notification;
-      }
-
-      // Function to show download completion notification
-      function showDownloadNotification(downloadPath) {
-        const notification = ensureNotificationElement();
-        
-        // Format the path for display (show only the relevant part)
-        const pathParts = downloadPath.split(/[\\\\/]/);
-        const displayPath = pathParts.length > 3 
-          ? '...' + pathParts.slice(-3).join(' / ')
-          : downloadPath;
-
-        notification.innerHTML = \`
-          <div class="notification-title">Download Completed</div>
-          <div class="notification-message">Your download has been saved and extracted.</div>
-          <div class="notification-path" data-path="\${downloadPath.replace(/\\\\/g, '\\\\\\\\')}">\${displayPath}</div>
-        \`;
-
-        // Add click handler to open file explorer
-        const pathElement = notification.querySelector('.notification-path');
-        pathElement.addEventListener('click', () => {
-          // Use electronBridge to open file explorer
-          if (window.electronBridge && window.electronBridge.openFileExplorer) {
-            window.electronBridge.openFileExplorer(downloadPath);
-          }
-        });
-
-        // Show notification
-        setTimeout(() => {
-          notification.classList.add('show');
-        }, 10);
-
-        // Auto-hide after 5 seconds
-        setTimeout(() => {
-          notification.classList.remove('show');
-          setTimeout(() => {
-            notification.innerHTML = '';
-          }, 300); // Wait for fade-out animation
-        }, 5000);
-      }
-
-      // Function to hide notification
-      function hideNotification(notification) {
-        notification.classList.remove('show');
-        setTimeout(() => {
-          notification.innerHTML = '';
-        }, 300); // Wait for fade-out animation
-      }
-
-      // Function to show import to Blender notification
-      function showImportNotification(completionData) {
-        const notification = ensureNotificationElement();
-
-        const assetName = completionData.asset_name || 'Asset';
-        const thumbnailHtml = completionData.thumbnailDataUrl
-          ? \`<img src="\${completionData.thumbnailDataUrl}" class="notification-thumbnail" />\`
-          : '<div class="notification-thumbnail-placeholder">No preview</div>';
-
-        notification.innerHTML = \`
-          <button class="notification-close" title="Close"></button>
-          <div class="notification-content-with-thumb">
-            \${thumbnailHtml}
-            <div class="notification-text">
-              <div class="notification-title">Import Complete</div>
-              <div class="notification-message">\${assetName} got imported in Blender</div>
-            </div>
-          </div>
-        \`;
-
-        // Show notification
-        setTimeout(() => {
-          notification.classList.add('show');
-        }, 10);
-
-        // Auto-hide after 5 seconds (only if still showing)
-        let autoHideTimeout = setTimeout(() => {
-          if (notification.classList.contains('show')) {
-            hideNotification(notification);
-          }
-        }, 5000);
-        
-        // Add click handler for close button
-        const closeBtn = notification.querySelector('.notification-close');
-        if (closeBtn) {
-          closeBtn.addEventListener('click', () => {
-            clearTimeout(autoHideTimeout);
-            hideNotification(notification);
-          });
-        }
-      }
-
-      // Listen for Blender import completion (set up via window object)
-      window.onBlenderImportComplete = function(completionData) {
-        // Restore button text to original
-        if (window.currentDownloadButton) {
-          removeProgressBar(window.currentDownloadButton);
-
-          if (window.currentDownloadButton._textElement && window.currentDownloadButton.dataset.originalText) {
-            window.currentDownloadButton._textElement.textContent = window.currentDownloadButton.dataset.originalText;
-            window.currentDownloadButton._textElement.classList.remove('animated-dots');
-          }
-
-          window.currentDownloadButton = null;
-        }
-
-        // Show import complete notification with thumbnail
-        showImportNotification(completionData);
-      };
-
-      // Set up download callbacks from main process
-      window.onDownloadProgress = function(data) {
-        // Clear timeout since download has started
-        if (window.downloadTimeoutId) {
-          clearTimeout(window.downloadTimeoutId);
-          window.downloadTimeoutId = null;
-        }
-        window.downloadAttemptStartTime = null;
-        
-        if (window.currentDownloadButton) {
-          updateProgressBar(window.currentDownloadButton, data.progress);
-        }
-      };
-
-      window.onDownloadComplete = function(data) {
-        // Clear timeout since download completed
-        if (window.downloadTimeoutId) {
-          clearTimeout(window.downloadTimeoutId);
-          window.downloadTimeoutId = null;
-        }
-        window.downloadAttemptStartTime = null;
-        
-        if (window.currentDownloadButton) {
-          updateProgressBar(window.currentDownloadButton, 100);
-
-          // Change button text to "Importing" with animated dots
-          if (window.currentDownloadButton._textElement) {
-            window.currentDownloadButton._textElement.textContent = 'Importing';
-            window.currentDownloadButton._textElement.classList.add('animated-dots');
-          }
-
-          // Don't auto-restore or show notification yet
-          // Wait for Blender to send completion callback
-        }
-
-        // Don't show download complete notification - only show when import is done
-      };
-
-      window.onDownloadFailed = function(data) {
-        // Clear timeout
-        if (window.downloadTimeoutId) {
-          clearTimeout(window.downloadTimeoutId);
-          window.downloadTimeoutId = null;
-        }
-        window.downloadAttemptStartTime = null;
-        
-        if (window.currentDownloadButton) {
-          removeProgressBar(window.currentDownloadButton);
-
-          // Restore button text to original
-          if (window.currentDownloadButton._textElement && window.currentDownloadButton.dataset.originalText) {
-            window.currentDownloadButton._textElement.textContent = window.currentDownloadButton.dataset.originalText;
-            window.currentDownloadButton._textElement.classList.remove('animated-dots');
-          }
-
-          window.currentDownloadButton = null;
-        }
-
-        alert('Download failed: ' + (data.error || 'Unknown error'));
-      };
-    })();
-  `;
+  // Detect website from current URL or use currentWebsite variable
+  let website = currentWebsite;
+  try {
+    const url = browserView.webContents.getURL();
+    if (url.includes('quixel.com')) {
+      website = 'quixel';
+    } else if (url.includes('polyhaven.com')) {
+      website = 'polyhaven';
+    }
+  } catch (e) {
+    // URL not available yet, use currentWebsite
+  }
+
+  // Generate injection script using the modular injector system
+  const debugScript = generateInjectionScript(website);
 
   browserView.webContents.executeJavaScript(debugScript);
 }
@@ -1830,6 +90,21 @@ function enableElementInspector() {
     (function() {
       // Remove existing inspector if active
       if (window.elementInspectorActive) {
+        document.removeEventListener('click', window.elementInspectorHandler, true);
+        document.removeEventListener('mouseover', window.elementInspectorHoverHandler, true);
+        document.removeEventListener('mouseout', window.elementInspectorMouseoutHandler, true);
+
+        // Remove any existing outlines
+        document.querySelectorAll('[data-inspector-outline]').forEach(el => {
+          el.style.outline = '';
+          el.removeAttribute('data-inspector-outline');
+        });
+
+        window.elementInspectorActive = false;
+        return;
+      }
+
+      window.elementInspectorActive = true;
         document.removeEventListener('click', window.elementInspectorHandler, true);
         document.removeEventListener('mouseover', window.elementInspectorHoverHandler, true);
         document.removeEventListener('mouseout', window.elementInspectorMouseoutHandler, true);
@@ -2155,7 +430,7 @@ function isAssetFolderValid(folderPath) {
 // 📥 BLENDER IMPORT - Send import request to Blender
 // ═══════════════════════════════════════════════════════════════
 
-function sendImportRequestToBlender(assetPath) {
+async function sendImportRequestToBlender(assetPath) {
   try {
     // ═══════════════════════════════════════════════════════════════
     // 🔒 INSTANCE ID - Optional for single Blender instance setups
@@ -2214,12 +489,26 @@ function sendImportRequestToBlender(assetPath) {
       }
     }
 
-    // Write import request with thumbnail, name, type, and Blender instance ID
+    // Get Glacier setup preference from localStorage (async)
+    let glacierSetup = true; // Default to enabled
+    if (browserView && browserView.webContents) {
+      try {
+        const glacierPref = await browserView.webContents.executeJavaScript(
+          'localStorage.getItem("quixelGlacierSetup")'
+        );
+        glacierSetup = glacierPref === null ? true : glacierPref === 'true';
+      } catch (err) {
+        // Use default if unable to read
+      }
+    }
+
+    // Write import request with thumbnail, name, type, Glacier setup, and Blender instance ID
     const requestData = {
       asset_path: assetPath,
       thumbnail: thumbnailPath,
       asset_name: assetName,
       asset_type: assetType,
+      glacier_setup: glacierSetup, // Include Glacier setup preference
       blender_instance_id: blenderInstanceId, // Add instance ID to target specific Blender instance
       timestamp: Date.now()
     };
@@ -3160,6 +1449,15 @@ function createWindow() {
 
   // Listen for console messages to handle file explorer requests AND sign-in URL detection
   browserView.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    // Handle dropdown close request from BrowserView
+    if (typeof message === 'string' && message.startsWith('QUIXEL_CLOSE_DROPDOWN:')) {
+      if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+        websiteDropdownWindow.close();
+        websiteDropdownWindow = null;
+      }
+      return;
+    }
+    
     // Check if asset exists locally before allowing API call
     if (typeof message === 'string' && message.startsWith('QUIXEL_CHECK_ASSET_EXISTS:')) {
       const assetId = message.substring('QUIXEL_CHECK_ASSET_EXISTS:'.length);
@@ -3717,11 +2015,14 @@ ipcMain.on('show-website-menu', (event, x, y) => {
     return;
   }
 
-  // Get main window position
-  const mainWindowBounds = mainWindow.getBounds();
+  // Get main window position - use getContentBounds() for accurate positioning in fullscreen
+  // getContentBounds() returns the content area bounds, which is what we need
+  const mainWindowBounds = mainWindow.getContentBounds();
+  const isFullscreen = mainWindow.isFullScreen();
 
   // Calculate absolute screen position
   // x, y are relative to the window content area
+  // In fullscreen mode, getContentBounds() already accounts for the screen position
   const screenX = mainWindowBounds.x + Math.round(x);
   const screenY = mainWindowBounds.y + Math.round(y);
 
@@ -3761,25 +2062,103 @@ ipcMain.on('show-website-menu', (event, x, y) => {
     }, 100);
   });
 
-  // Clean up when closed
-  websiteDropdownWindow.on('closed', () => {
-    websiteDropdownWindow = null;
-  });
+  // Global click handler that works for both titlebar and BrowserView
+  // Define this first so it can be used in closeDropdown
+  let globalClickHandler = null;
 
-  // Close dropdown when clicking on main window (including BrowserView)
-  const closeDropdownOnClick = () => {
+  // Close dropdown function
+  const closeDropdown = () => {
     if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
       websiteDropdownWindow.close();
       websiteDropdownWindow = null;
     }
+    // Remove global click listeners
+    if (globalClickHandler) {
+      mainWindow.webContents.removeListener('before-input-event', globalClickHandler);
+      if (browserView) {
+        browserView.webContents.removeListener('before-input-event', globalClickHandler);
+      }
+      globalClickHandler = null;
+    }
   };
 
-  // Listen for clicks on main window
-  mainWindow.webContents.once('before-input-event', closeDropdownOnClick);
+  // Create global click handler that works for both titlebar and BrowserView
+  globalClickHandler = (event, input) => {
+    // Only close on mouse clicks, not keyboard events
+    if (input && (input.type === 'mouseDown' || input.type === 'mouseUp')) {
+      closeDropdown();
+    }
+  };
 
-  // Listen for clicks on BrowserView
+  // Listen for clicks on main window (titlebar)
+  mainWindow.webContents.on('before-input-event', globalClickHandler);
+
+  // Listen for clicks on BrowserView (website content)
   if (browserView) {
-    browserView.webContents.once('before-input-event', closeDropdownOnClick);
+    browserView.webContents.on('before-input-event', globalClickHandler);
+    
+    // Also inject a click handler into the BrowserView for more reliable detection
+    // This catches clicks that might not trigger before-input-event
+    // Only inject if dropdown is actually open
+    if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+      const clickHandlerScript = `
+        (function() {
+          // Remove existing handler if any
+          if (window._quixelDropdownClickHandler) {
+            document.removeEventListener('click', window._quixelDropdownClickHandler, true);
+          }
+          
+          window._quixelDropdownClickHandler = function(e) {
+            // Send message to main process to close dropdown
+            console.log('QUIXEL_CLOSE_DROPDOWN:click');
+            // Remove handler after first click
+            document.removeEventListener('click', window._quixelDropdownClickHandler, true);
+            window._quixelDropdownClickHandler = null;
+          };
+          
+          // Add click listener to document (capture phase to catch all clicks)
+          document.addEventListener('click', window._quixelDropdownClickHandler, true);
+        })();
+      `;
+      
+      browserView.webContents.executeJavaScript(clickHandlerScript).catch(() => {
+        // Ignore errors if page isn't ready
+      });
+    }
+  }
+
+  // Clean up when closed
+  websiteDropdownWindow.on('closed', () => {
+    // Remove global click listeners when dropdown closes
+    if (globalClickHandler) {
+      mainWindow.webContents.removeListener('before-input-event', globalClickHandler);
+      if (browserView) {
+        browserView.webContents.removeListener('before-input-event', globalClickHandler);
+      }
+      globalClickHandler = null;
+    }
+    websiteDropdownWindow = null;
+  });
+
+  // Auto-hide when it loses focus (backup mechanism)
+  websiteDropdownWindow.on('blur', () => {
+    // Small delay to prevent immediate close when clicking between elements
+    setTimeout(() => {
+      if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+        // Only close if dropdown is not focused (user clicked elsewhere)
+        if (!websiteDropdownWindow.isFocused()) {
+          closeDropdown();
+        }
+      }
+    }, 100);
+  });
+});
+
+// Handle close dropdown request (called from dropdown window)
+ipcMain.on('close-dropdown', () => {
+  if (websiteDropdownWindow && !websiteDropdownWindow.isDestroyed()) {
+    websiteDropdownWindow.close();
+    websiteDropdownWindow = null;
   }
 });
 
@@ -3918,6 +2297,151 @@ ipcMain.on('execute-submenu-action', (event, action) => {
         });
       }
       break;
+
+    // Settings actions
+    case 'settings-open':
+      createSettingsWindow();
+      break;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ⚙️ SETTINGS WINDOW
+// ═══════════════════════════════════════════════════════════════
+
+// Create settings window
+function createSettingsWindow() {
+  // If settings window already exists, focus it
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+
+  // Create settings window
+  settingsWindow = new BrowserWindow({
+    width: 900,
+    height: 600,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    skipTaskbar: false,
+    parent: mainWindow,
+    modal: true,
+    backgroundColor: '#1a1a1a',
+    webPreferences: {
+      preload: path.join(__dirname, 'settings-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    },
+    icon: path.join(__dirname, 'assets', 'images', 'windows_icon.ico')
+  });
+
+  // Remove menu bar
+  settingsWindow.setMenuBarVisibility(false);
+
+  // Load settings HTML
+  settingsWindow.loadFile('settings.html');
+
+  // Handle window close
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+  });
+
+  // Center on parent window
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const mainBounds = mainWindow.getBounds();
+    const settingsBounds = settingsWindow.getBounds();
+    const x = Math.round(mainBounds.x + (mainBounds.width - settingsBounds.width) / 2);
+    const y = Math.round(mainBounds.y + (mainBounds.height - settingsBounds.height) / 2);
+    settingsWindow.setPosition(x, y);
+  }
+}
+
+// Close settings window
+ipcMain.on('close-settings', () => {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.close();
+    settingsWindow = null;
+  }
+});
+
+// Select download path using dialog
+ipcMain.handle('select-download-path', async () => {
+  const result = await dialog.showOpenDialog(settingsWindow || mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select Download Location',
+    defaultPath: path.join(os.homedir(), 'Documents', 'Quixel Portal')
+  });
+
+  if (!result.canceled && result.filePaths.length > 0) {
+    return result.filePaths[0];
+  }
+
+  return null;
+});
+
+// Get current settings from localStorage (via BrowserView session)
+ipcMain.handle('get-settings', async () => {
+  if (!browserView || !browserView.webContents) {
+    return {
+      downloadPath: path.join(os.homedir(), 'Documents', 'Quixel Portal'),
+      glacierSetup: true
+    };
+  }
+
+  try {
+    // Execute JavaScript in BrowserView to get localStorage values
+    const downloadPath = await browserView.webContents.executeJavaScript(
+      'localStorage.getItem("quixelDownloadPath") || null'
+    );
+    const glacierSetup = await browserView.webContents.executeJavaScript(
+      'localStorage.getItem("quixelGlacierSetup")'
+    );
+
+    return {
+      downloadPath: downloadPath || path.join(os.homedir(), 'Documents', 'Quixel Portal'),
+      glacierSetup: glacierSetup === null ? true : glacierSetup === 'true'
+    };
+  } catch (error) {
+    console.error('Failed to get settings from localStorage:', error);
+    return {
+      downloadPath: path.join(os.homedir(), 'Documents', 'Quixel Portal'),
+      glacierSetup: true
+    };
+  }
+});
+
+// Save settings to localStorage (via BrowserView session)
+ipcMain.on('save-settings', async (event, settings) => {
+  if (!browserView || !browserView.webContents) {
+    return;
+  }
+
+  try {
+    // Update localStorage in BrowserView
+    await browserView.webContents.executeJavaScript(`
+      localStorage.setItem('quixelDownloadPath', ${JSON.stringify(settings.downloadPath)});
+      localStorage.setItem('quixelGlacierSetup', ${JSON.stringify(settings.glacierSetup.toString())});
+
+      // Trigger storage event for in-page settings sync
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'quixelDownloadPath',
+        newValue: ${JSON.stringify(settings.downloadPath)},
+        oldValue: localStorage.getItem('quixelDownloadPath'),
+        storageArea: localStorage
+      }));
+
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'quixelGlacierSetup',
+        newValue: ${JSON.stringify(settings.glacierSetup.toString())},
+        oldValue: localStorage.getItem('quixelGlacierSetup'),
+        storageArea: localStorage
+      }));
+    `);
+
+    console.log('Settings saved:', settings);
+  } catch (error) {
+    console.error('Failed to save settings to localStorage:', error);
   }
 });
 

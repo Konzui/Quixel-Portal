@@ -11,6 +11,9 @@ body {
   user-select: none;
   width: 100%;
   height: 100%;
+  cursor: default;
+  /* Make body clickable to close dropdown when clicking on empty space */
+  pointer-events: auto;
 }
 
 /* Dropdown Container (holds both main menu and submenu) */
@@ -74,7 +77,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   padding: 8px 12px;
   background: transparent;

@@ -44,6 +44,20 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Titlebar Logo */
+.titlebar-logo {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  opacity: 0.9;
+  transition: opacity 0.2s ease;
+  margin-right: 4px; /* Additional 4px gap after the 8px from .titlebar-left gap = 12px total */
+}
+
+.titlebar-logo:hover {
+  opacity: 1;
+}
+
 /* Menu Button with Logo */
 .menu-button {
   display: flex;
@@ -92,7 +106,7 @@ body {
 .website-selector-button {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 8px;
   padding: 4px 2px 4px 8px;
   background: transparent;
   border: 1px solid #383838;
@@ -101,7 +115,7 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   height: 32px;
-  width: 128px;
+  width: 144px;
   font-family: 'Inter', sans-serif;
   font-size: 13px;
   font-weight: 500;
