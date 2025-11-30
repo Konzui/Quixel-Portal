@@ -1,16 +1,15 @@
 # Quixel Portal - Blender Addon
 
-A Blender addon that opens Quixel Megascans in a dedicated Electron-based browser with persistent login sessions and seamless asset import.
+A Blender addon that integrates with Quixel Bridge for seamless asset import directly into Blender.
 
 ## Features
 
-- One-click access to Quixel Megascans from within Blender
-- Dedicated browser with navigation toolbar (back, forward, home, reload)
-- Persistent session storage - stays logged in between sessions
-- Automatic asset import from Quixel downloads
+- Direct integration with Quixel Bridge application
+- Automatic asset import from Quixel Bridge exports
 - Support for FBX models and surface materials
 - Automatic material creation with texture mapping
 - Variation support with proper spacing
+- LOD (Level of Detail) switching and preview
 - Compatible with Blender 4.2.1 LTS and Python 3.11
 
 ## Project Structure
@@ -19,28 +18,28 @@ A Blender addon that opens Quixel Megascans in a dedicated Electron-based browse
 Quixel Portal/
 ├── __init__.py                    # Blender addon registration (minimal entry point)
 ├── main.py                        # Main application flow orchestrator
-├── communication/                 # Electron-Blender IPC communication
+├── communication/                 # Quixel Bridge communication
 │   ├── __init__.py
-│   ├── electron_bridge.py        # Instance management, process verification, IPC
-│   └── file_watcher.py           # Import request polling and validation
+│   └── quixel_bridge_socket.py   # Socket listener for Bridge communication
 ├── operations/                    # Asset import and processing
 │   ├── __init__.py
-│   ├── portal_launcher.py        # Electron app launching
 │   ├── fbx_importer.py           # FBX file import operations
 │   ├── material_creator.py       # Material creation from textures
-│   └── asset_processor.py       # Object organization and hierarchy
+│   ├── asset_processor.py        # Object organization and hierarchy
+│   └── name_corrector.py         # Object name correction
 ├── utils/                         # Helper functions
 │   ├── __init__.py
 │   ├── naming.py                 # Naming conventions and JSON parsing
 │   ├── texture_loader.py         # Texture loading utilities
-│   └── validation.py             # Path and asset validation
+│   ├── validation.py             # Path and asset validation
+│   └── scene_manager.py          # Scene management utilities
 ├── ui/                           # Blender UI components
 │   ├── __init__.py
-│   └── operators.py             # Blender operators (UI entry points)
-└── electron_app/                 # Electron application
-    ├── main.js                  # Main Electron process
-    ├── preload.js               # Preload script for IPC
-    └── package.json             # Node.js dependencies
+│   ├── operators.py             # Blender operators (UI entry points)
+│   ├── import_modal.py          # Import confirmation modal
+│   └── import_toolbar.py        # Import toolbar with LOD controls
+└── assets/                       # Addon assets
+    └── icons/                    # Icon files
 ```
 
 ## Architecture
@@ -49,19 +48,18 @@ The addon is organized into clear, modular components:
 
 ### Communication Layer (`communication/`)
 
-Handles all interaction with the Electron application:
+Handles all interaction with Quixel Bridge:
 
-- **electron_bridge.py**: Manages instance IDs, process verification, heartbeat system, and file-based IPC
-- **file_watcher.py**: Monitors for import requests from Electron and validates them
+- **quixel_bridge_socket.py**: Socket listener that receives JSON data from Quixel Bridge on port 24981
 
 ### Operations Layer (`operations/`)
 
 Contains the core business logic for asset processing:
 
-- **portal_launcher.py**: Launches and manages the Electron application
 - **fbx_importer.py**: Imports FBX files and groups objects
 - **material_creator.py**: Creates materials from textures with variation support
 - **asset_processor.py**: Organizes objects by variation and creates hierarchy
+- **name_corrector.py**: Corrects object names to match expected conventions
 
 ### Utilities (`utils/`)
 
@@ -70,40 +68,23 @@ Reusable helper functions:
 - **naming.py**: Asset naming conventions, JSON parsing, variation detection
 - **texture_loader.py**: Texture file discovery and image node creation
 - **validation.py**: Path validation and asset type detection
+- **scene_manager.py**: Preview scene creation and management
 
 ### UI Layer (`ui/`)
 
 Blender-specific UI components:
 
 - **operators.py**: Thin wrapper operators that call main.py functions
+- **import_modal.py**: Import confirmation modal with preview
+- **import_toolbar.py**: Toolbar with LOD switching and wireframe toggle
 
 ### Main Orchestrator (`main.py`)
 
-High-level workflow functions that coordinate between modules, hiding communication details from business logic.
+High-level workflow functions that coordinate between modules.
 
 ## Installation
 
-### Step 1: Install Node.js Dependencies
-
-1. Open a terminal/command prompt
-2. Navigate to the `electron_app` directory
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-### Step 2: Build Production Version (Optional)
-
-If you have the source code and want to build a production-ready zip file:
-
-1. Open a terminal/command prompt in the root directory
-2. Run the build script:
-   ```bashöö'
-   python build.p
-   ```
-3. This will create `Quixel_Portal_v1.0.0.zip` ready for distribution
-
-### Step 3: Install Blender Addon
+### Step 1: Install Blender Addon
 
 **Method 1: Install from Zip File (Recommended)**
 
@@ -123,46 +104,40 @@ If you have the source code and want to build a production-ready zip file:
 2. Restart Blender
 3. Enable the addon in preferences
 
+### Step 2: Install Quixel Bridge
+
+1. Download and install Quixel Bridge from [Quixel's website](https://quixel.com/bridge)
+2. Make sure Quixel Bridge is running
+3. Configure Quixel Bridge to export assets to your preferred location
+
 ## Usage
 
-1. In Blender, look for the "Quixel Portal" button in the topbar
-2. Click the button to open Quixel Portal
-3. The Electron app will launch and navigate to Quixel Megascans
-4. Log in to your Quixel account (this will be remembered for future sessions)
-5. Download assets from Quixel - they will automatically import into Blender
-6. Assets are organized by variation with proper spacing
+1. **Enable the Addon**: In Blender, go to `Edit > Preferences > Add-ons` and enable "Quixel Portal"
+2. **Start Quixel Bridge**: Launch Quixel Bridge application
+3. **Export from Bridge**: In Quixel Bridge, select assets and export them. The addon will automatically detect and import them into Blender
+4. **Import Confirmation**: When an asset is detected, a toolbar will appear allowing you to:
+   - Preview the asset with different LOD levels
+   - Toggle wireframe mode
+   - Accept or cancel the import
+5. **Asset Organization**: Imported assets are automatically organized by variation with proper spacing
 
 ## How It Works
 
 ### Communication Flow
 
-1. **Portal Launch**: Blender launches Electron app with a unique instance ID
-2. **Import Request**: Electron writes `import_request.json` to temp directory when asset is downloaded
-3. **Request Monitoring**: Blender polls for import requests every second
-4. **Asset Import**: Blender processes the request and imports the asset
-5. **Completion Notification**: Blender writes `import_complete.json` to notify Electron
-6. **Heartbeat**: Blender writes heartbeat files every 30 seconds to signal it's alive
+1. **Socket Listener**: The addon starts a socket listener on port 24981 when enabled
+2. **Bridge Export**: When you export an asset from Quixel Bridge, Bridge sends JSON data to the socket
+3. **Asset Detection**: The addon receives the JSON data and parses asset information
+4. **Import Processing**: The asset is imported into Blender with materials and proper organization
+5. **Preview Toolbar**: A toolbar appears allowing you to preview and confirm the import
 
-### File-Based IPC
+### Socket Communication
 
-All communication happens via JSON files in `%TEMP%/quixel_portal/`:
+The addon listens on `localhost:24981` for JSON data from Quixel Bridge. The JSON format includes:
 
-- `import_request.json`: Electron → Blender (asset download request)
-- `import_complete.json`: Blender → Electron (import completion notification)
-- `heartbeat_{instance_id}.txt`: Blender → Electron (alive signal)
-- `electron_lock_{instance_id}.txt`: Electron → Blender (process lock)
-
-### Persistent Sessions
-
-The Electron app uses a persistent partition (`persist:quixel`) which stores:
-
-- Cookies
-- Local storage
-- Session storage
-- Cache
-- Other browser data
-
-This means once you log in to Quixel, your session will be remembered even after closing and reopening the application.
+- `path`: Path to the asset directory
+- `name`: Asset name
+- `resolution`: Texture resolution (e.g., "2K", "4K", "8K")
 
 ## Development
 
@@ -171,36 +146,8 @@ This means once you log in to Quixel, your session will be remembered even after
 The addon is designed for easy extension:
 
 - **Adding new import types**: Create a new module in `operations/` (e.g., `obj_importer.py`) and update `main.py` to detect and call it
-- **Modifying communication**: All Electron communication is isolated in `communication/` - changes here don't affect import logic
+- **Modifying communication**: All Bridge communication is isolated in `communication/` - changes here don't affect import logic
 - **Extending utilities**: Add helper functions to `utils/` modules as needed
-
-### Testing the Electron App
-
-You can test the Electron app independently:
-
-```bash
-cd electron_app
-npm start
-```
-
-### Building Standalone Executables
-
-To build standalone executables:
-
-```bash
-# Windows
-npm run build-win
-
-# macOS
-npm run build-mac
-
-# Linux
-npm run build-linux
-```
-
-Built files will be in `electron_app/build/`
-
-## Developer Guide
 
 ### Adding a New Import Type
 
@@ -214,7 +161,7 @@ To add support for importing OBJ files (for example):
        pass
 
    def import_obj_file(filepath, context):
-       # Import OBX file
+       # Import OBJ file
        pass
    ```
 
@@ -226,8 +173,6 @@ To add support for importing OBJ files (for example):
        return _import_obj_asset(...)
    ```
 
-3. No need to understand Electron communication - it's already handled!
-
 ### Extending Material Creation
 
 To add new texture types or material nodes:
@@ -236,27 +181,13 @@ To add new texture types or material nodes:
 2. Update `operations/material_creator.py` to handle new texture types
 3. The communication layer remains unchanged
 
-### Modifying Communication
-
-All Electron communication is in `communication/`:
-
-- Change IPC protocol? Modify `electron_bridge.py`
-- Change polling frequency? Modify `file_watcher.py`
-- Import/export logic is unaffected
-
 ## Troubleshooting
 
-### "Electron app not found" error
+### "Port 24981 already in use" error
 
-- Make sure you've installed npm dependencies in the `electron_app` directory
-- Verify the `electron_app` folder exists in the addon directory
-- Check that the executable path is correct in `communication/electron_bridge.py`
-
-### "npm install" fails
-
-- Ensure Node.js is installed (download from https://nodejs.org/)
-- Try running the command prompt as administrator
-- Clear npm cache: `npm cache clean --force`
+- Another Blender instance may be running with the addon enabled
+- Close other Blender instances or disable the addon in other instances
+- Check if another application is using port 24981
 
 ### Addon doesn't appear in Blender
 
@@ -265,6 +196,13 @@ All Electron communication is in `communication/`:
 - Look for error messages in Blender's console (Window > Toggle System Console)
 - Verify all `__init__.py` files are present in subdirectories
 
+### Assets not importing from Bridge
+
+- Make sure Quixel Bridge is running
+- Verify the socket listener started successfully (check Blender console)
+- Check that Quixel Bridge is configured to send data to the addon
+- Ensure port 24981 is not blocked by firewall
+
 ### Import errors
 
 - Check that asset directories contain valid FBX files or surface materials
@@ -272,26 +210,18 @@ All Electron communication is in `communication/`:
 - Check Blender console for specific error messages
 - Ensure textures are in supported formats (PNG, JPG, TGA, EXR, etc.)
 
-### Electron app opens but shows blank screen
-
-- Check your internet connection
-- Try reloading the page manually
-- Check if quixel.com is accessible in a regular browser
-- Verify Electron app is using the correct URL
-
 ### Import requests not processing
 
-- Check that the temp directory is accessible: `%TEMP%/quixel_portal/`
-- Verify instance IDs match between Blender and Electron
-- Check Blender console for import request validation errors
-- Ensure heartbeat files are being written (check temp directory)
+- Check Blender console for socket connection errors
+- Verify the socket listener is running (should see startup message in console)
+- Ensure Quixel Bridge is sending data to the correct port (24981)
 
 ## Requirements
 
 - Blender 4.2.1 LTS (or compatible version)
 - Python 3.11 (bundled with Blender)
-- Node.js 16 or higher
-- Internet connection
+- Quixel Bridge application
+- Internet connection (for downloading assets from Quixel)
 
 ## License
 

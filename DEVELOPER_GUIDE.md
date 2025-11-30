@@ -6,7 +6,7 @@ This guide explains how the Quixel Portal Blender addon works, how to navigate t
 
 1. [Project Overview](#project-overview)
 2. [Project Structure](#project-structure)
-3. [Python-Electron Communication](#python-electron-communication)
+3. [Quixel Bridge Communication](#quixel-bridge-communication)
 4. [Function Location Guide](#function-location-guide)
 5. [Extension Points](#extension-points)
 6. [Import Workflow Walkthrough](#import-workflow-walkthrough)
@@ -18,33 +18,26 @@ This guide explains how the Quixel Portal Blender addon works, how to navigate t
 
 ### What This Addon Does
 
-The Quixel Portal addon integrates Quixel Megascans with Blender by:
-- Opening Quixel Portal in a dedicated Electron-based browser window
-- Maintaining persistent login sessions
-- Automatically importing downloaded assets into Blender
+The Quixel Portal addon integrates Quixel Bridge with Blender by:
+- Listening for asset exports from Quixel Bridge via socket communication
+- Automatically importing exported assets into Blender
 - Organizing assets with proper materials, LODs, and variations
 
 ### High-Level Architecture
 
-The addon consists of two main components:
+The addon consists of a single Python component:
 
 1. **Python Addon** (Blender side)
    - Runs inside Blender
    - Handles asset import and processing
-   - Communicates with Electron via file-based IPC
-
-2. **Electron App** (Standalone application)
-   - Runs as a separate process
-   - Provides a browser window for Quixel Portal
-   - Detects downloads and sends import requests to Blender
+   - Communicates with Quixel Bridge via socket on port 24981
 
 ### Communication Method
 
-The two components communicate using **file-based IPC** (Inter-Process Communication):
-- Files are written to a temporary directory (`%TEMP%/quixel_portal/`)
-- Python polls for request files
-- Electron writes requests and reads completions
-- No direct process communication needed
+The addon communicates with Quixel Bridge using **socket-based communication**:
+- Python listens on `localhost:24981` for JSON data from Quixel Bridge
+- Quixel Bridge sends JSON data when assets are exported
+- No file-based IPC needed - direct socket communication
 
 ---
 
@@ -56,11 +49,9 @@ The two components communicate using **file-based IPC** (Inter-Process Communica
 Quixel Portal/
 ├── __init__.py                 # Addon entry point and registration
 ├── main.py                     # Main workflow orchestration
-├── communication/              # Electron IPC layer
-│   ├── electron_bridge.py     # Direct Electron communication
-│   └── file_watcher.py         # Import request polling
+├── communication/              # Quixel Bridge communication
+│   └── quixel_bridge_socket.py # Socket listener for Bridge communication
 ├── operations/                  # Business logic layer
-│   ├── portal_launcher.py      # Launch Electron app
 │   ├── fbx_importer.py         # FBX file import
 │   ├── material_creator.py     # Material creation from textures
 │   ├── asset_processor.py      # Object organization and hierarchy
@@ -68,13 +59,14 @@ Quixel Portal/
 ├── utils/                       # Helper functions
 │   ├── naming.py               # Naming conventions and JSON parsing
 │   ├── texture_loader.py       # Texture loading utilities
-│   └── validation.py           # Path and asset validation
+│   ├── validation.py           # Path and asset validation
+│   └── scene_manager.py        # Scene management utilities
 ├── ui/                          # Blender UI components
-│   └── operators.py            # Blender operators (UI entry points)
-└── electron_app/                # Electron application
-    ├── main.js                 # Electron main process
-    ├── preload.js              # Preload script for security
-    └── ...                     # Other Electron files
+│   ├── operators.py            # Blender operators (UI entry points)
+│   ├── import_modal.py         # Import confirmation modal
+│   └── import_toolbar.py       # Import toolbar with LOD controls
+└── assets/                      # Addon assets
+    └── icons/                   # Icon files
 ```
 
 ### Module Responsibilities
@@ -84,8 +76,8 @@ Quixel Portal/
 
 **What it does**:
 - Registers Blender operators (UI buttons/commands)
-- Adds button to Blender's topbar
-- Starts background timers (request watcher, heartbeat)
+- Starts socket listener for Quixel Bridge communication
+- Starts background timer to check for pending imports
 - Loads custom icons
 
 **Key functions**:
@@ -100,7 +92,7 @@ Quixel Portal/
 **Purpose**: High-level coordinator that orchestrates the entire import process
 
 **What it does**:
-- Receives import requests
+- Receives import requests from socket listener
 - Detects asset type (FBX vs surface material)
 - Coordinates between different operation modules
 - Manages the step-by-step import workflow
@@ -126,71 +118,34 @@ import_asset()
 
 ---
 
-#### `communication/` - Electron IPC Layer
+#### `communication/` - Quixel Bridge Communication Layer
 
-##### `electron_bridge.py`
-**Purpose**: Direct communication with the Electron application
-
-**What it does**:
-- Manages instance IDs (unique ID per Blender session)
-- Launches Electron application
-- Writes heartbeat files (tells Electron that Blender is still running)
-- Reads import requests from Electron
-- Writes completion notifications to Electron
-
-**Key functions**:
-- `get_or_create_instance_id()`: Get unique ID for this Blender instance
-- `launch_electron_app()`: Launch Electron with instance ID
-- `write_heartbeat()`: Write heartbeat file every 30 seconds
-- `read_import_request()`: Read import request JSON file
-- `write_import_complete()`: Write completion notification
-
-**File locations**:
-- All IPC files: `%TEMP%/quixel_portal/`
-- Import request: `import_request.json`
-- Completion: `import_complete.json`
-- Heartbeat: `heartbeat_{instance_id}.txt`
-- Lock file: `electron_lock_{instance_id}.txt`
-
-**When to modify**: When changing IPC protocol or file formats
-
----
-
-##### `file_watcher.py`
-**Purpose**: Monitors for import requests from Electron
+##### `quixel_bridge_socket.py`
+**Purpose**: Socket communication with Quixel Bridge application
 
 **What it does**:
-- Polls for import request files every 1 second
-- Validates requests (checks instance ID, timestamp)
-- Cleans up stale requests
-- Bridges requests to the main import function
+- Listens on port 24981 for JSON data from Quixel Bridge
+- Parses JSON data and converts to import requests
+- Queues import requests for processing in main thread
+- Provides thread-safe access to pending imports
 
 **Key functions**:
-- `check_import_requests()`: Timer function that polls for requests
-- `validate_request()`: Validates request data
-- `setup_request_watcher()`: Registers the polling timer
+- `start_socket_listener()`: Start the socket listener thread
+- `stop_socket_listener()`: Stop the socket listener
+- `check_pending_imports()`: Timer function that processes queued imports
+- `parse_bridge_json()`: Parse JSON data from Quixel Bridge
 
-**When to modify**: When changing polling interval or validation logic
+**Socket details**:
+- Host: `localhost`
+- Port: `24981`
+- Protocol: TCP socket
+- Data format: JSON
+
+**When to modify**: When changing socket protocol or JSON format
 
 ---
 
 #### `operations/` - Business Logic Layer
-
-##### `portal_launcher.py`
-**Purpose**: Launch and manage the Electron application
-
-**What it does**:
-- Handles debouncing (prevents rapid button clicks)
-- Checks if Electron is already running
-- Sends "show window" signals to existing instances
-- Launches new Electron instances when needed
-
-**Key functions**:
-- `open_quixel_portal()`: Main entry point for opening portal
-
-**When to modify**: When changing launch behavior or window management
-
----
 
 ##### `fbx_importer.py`
 **Purpose**: Import FBX files into Blender
@@ -328,8 +283,29 @@ import_asset()
 **Key functions**:
 - `validate_path()`: Checks if a path exists
 - `validate_asset_directory()`: Validates asset structure and type
+- `is_folder_empty()`: Checks if folder is empty
+- `check_folder_contents()`: Gets detailed folder contents
 
 **When to modify**: When changing validation rules
+
+---
+
+##### `scene_manager.py`
+**Purpose**: Scene management utilities
+
+**What it does**:
+- Creates temporary preview scenes for import
+- Manages scene switching
+- Transfers assets between scenes
+- Cleans up preview scenes
+
+**Key functions**:
+- `create_preview_scene()`: Creates temporary preview scene
+- `switch_to_scene()`: Switches to a different scene
+- `transfer_assets_to_original_scene()`: Transfers assets between scenes
+- `cleanup_preview_scene()`: Removes preview scene
+
+**When to modify**: When changing preview scene behavior
 
 ---
 
@@ -344,7 +320,6 @@ import_asset()
 - Handles user-facing errors
 
 **Key classes**:
-- `QUIXEL_OT_open_portal`: Opens Quixel Portal
 - `QUIXEL_OT_import_fbx`: Imports an asset manually
 - `QUIXEL_OT_cleanup_requests`: Cleans up stuck requests
 
@@ -352,122 +327,130 @@ import_asset()
 
 ---
 
-## Python-Electron Communication
+##### `import_modal.py`
+**Purpose**: Import confirmation modal
+
+**What it does**:
+- Shows import confirmation toolbar
+- Manages preview scene
+- Handles accept/cancel callbacks
+
+**Key functions**:
+- `show_import_toolbar()`: Shows the import toolbar
+- `get_active_toolbar()`: Gets the currently active toolbar
+- `cleanup_toolbar()`: Cleans up the toolbar
+
+**When to modify**: When changing import confirmation UI
+
+---
+
+##### `import_toolbar.py`
+**Purpose**: Import toolbar with LOD controls
+
+**What it does**:
+- Displays LOD slider for switching between LOD levels
+- Provides wireframe toggle
+- Shows accept/cancel buttons
+- Manages toolbar state
+
+**Key functions**:
+- `position_lods_for_preview()`: Positions LODs for preview
+- `set_lod_levels()`: Sets available LOD levels
+- `_handle_slider_change()`: Handles LOD slider changes
+- `_handle_wireframe_toggle()`: Handles wireframe toggle
+
+**When to modify**: When changing toolbar UI or adding new controls
+
+---
+
+## Quixel Bridge Communication
 
 ### How It Works
 
-The Python addon and Electron app communicate using **file-based IPC** - they write and read JSON files in a temporary directory.
+The Python addon communicates with Quixel Bridge using **socket-based communication** - Quixel Bridge sends JSON data over a TCP socket when assets are exported.
 
 ### Communication Flow
 
 ```
 ┌─────────────────┐                    ┌──────────────────┐
-│  Electron App   │                    │  Python Addon    │
+│ Quixel Bridge   │                    │  Python Addon    │
 │                 │                    │                  │
-│  1. User clicks │                    │                  │
-│     download    │                    │                  │
+│  1. User exports│                    │                  │
+│     asset       │                    │                  │
 │                 │                    │                  │
-│  2. Write       │ ────(file)──────> │  3. Poll every   │
-│     import_     │                    │     1 second     │
-│     request.json│                    │                  │
-│                 │                    │  4. Read &       │
-│                 │                    │     validate     │
+│  2. Send JSON   │ ────(socket)─────> │  3. Socket       │
+│     data to     │                    │     listener     │
+│     port 24981  │                    │     receives     │
 │                 │                    │                  │
-│                 │                    │  5. Import asset │
+│                 │                    │  4. Parse JSON   │
+│                 │                    │     and queue     │
 │                 │                    │                  │
-│  6. Read        │ <────(file)─────── │  7. Write        │
-│     import_     │                    │     import_      │
-│     complete.json│                    │     complete.json │
+│                 │                    │  5. Process      │
+│                 │                    │     import       │
 │                 │                    │                  │
-│  8. Show        │                    │                  │
-│     notification│                    │                  │
-└─────────────────┘                    ┌──────────────────┘
+│                 │                    │  6. Import       │
+│                 │                    │     complete     │
+└─────────────────┘                    └──────────────────┘
 ```
 
-### File Locations
+### Socket Details
 
-All IPC files are stored in: `%TEMP%/quixel_portal/`
+- **Host**: `localhost` (127.0.0.1)
+- **Port**: `24981`
+- **Protocol**: TCP socket
+- **Data Format**: JSON
 
-**Windows**: `C:\Users\<username>\AppData\Local\Temp\quixel_portal\`
-**Linux/Mac**: `/tmp/quixel_portal/`
+### JSON Format
 
-### File Formats
+Quixel Bridge sends JSON data in the following format:
 
-#### Import Request (`import_request.json`)
+```json
+[
+  {
+    "path": "C:/Users/.../Downloads/asset_folder",
+    "name": "Rock_Asset_01",
+    "resolution": "2K"
+  }
+]
+```
 
-Written by Electron when user downloads an asset:
+Or a single object:
 
 ```json
 {
-  "asset_path": "C:/Users/.../Downloads/asset_folder",
-  "thumbnail": "C:/Users/.../Downloads/asset_folder/thumbnail.jpg",
-  "asset_name": "Rock_Asset_01",
-  "asset_type": "3d",
-  "blender_instance_id": "550e8400-e29b-41d4-a716-446655440000",
-  "timestamp": 1704067200000
+  "path": "C:/Users/.../Downloads/asset_folder",
+  "name": "Rock_Asset_01",
+  "resolution": "2K"
 }
 ```
 
 **Fields**:
-- `asset_path`: Path to the downloaded asset directory
-- `thumbnail`: Path to thumbnail image (optional)
-- `asset_name`: Name of the asset
-- `asset_type`: Type of asset ("3d" or "surface")
-- `blender_instance_id`: UUID of the Blender instance that should handle this
-- `timestamp`: Unix timestamp in milliseconds
+- `path`: Path to the exported asset directory (required)
+- `name`: Name of the asset (optional, falls back to directory name)
+- `resolution`: Texture resolution (e.g., "2K", "4K", "8K") (optional)
 
-#### Import Complete (`import_complete.json`)
+### Socket Listener
 
-Written by Python when import finishes:
+The socket listener runs in a separate thread and:
+- Binds to `localhost:24981` when the addon is enabled
+- Accepts connections from Quixel Bridge
+- Receives JSON data and parses it
+- Queues import requests for processing in the main Blender thread
+- Handles connection errors gracefully
 
-```json
-{
-  "asset_path": "C:/Users/.../Downloads/asset_folder",
-  "asset_name": "Rock_Asset_01",
-  "thumbnail": "C:/Users/.../Downloads/asset_folder/thumbnail.jpg",
-  "timestamp": 1704067200000
-}
-```
+### Import Request Processing
 
-#### Heartbeat (`heartbeat_{instance_id}.txt`)
+Import requests are processed in the main Blender thread via a timer:
+- Timer runs every 1 second (or 0.1 seconds if imports are pending)
+- Processes one import at a time to avoid blocking
+- Calls `main.py::import_asset()` for each queued request
 
-Written by Python every 30 seconds to signal that Blender is still running:
+### Thread Safety
 
-```json
-{
-  "timestamp": 1704067200,
-  "blender_pid": 12345,
-  "instance_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-Electron reads this to know if Blender is still alive. If heartbeat stops, Electron can close.
-
-### Instance ID System
-
-Each Blender instance gets a **unique UUID** that:
-- Is generated when the addon first runs
-- Persists for the entire Blender session
-- Is passed to Electron when launching
-- Is used to match import requests to the correct Blender instance
-
-**Why this matters**: If you have multiple Blender windows open, each gets its own Electron window, and import requests are routed to the correct Blender instance.
-
-### Request Validation
-
-Before processing an import request, Python validates:
-1. **Instance ID match**: Request must be for THIS Blender instance
-2. **Timestamp check**: Request must be less than 30 seconds old
-3. **File existence**: Asset path must exist
-
-If validation fails, the request is ignored or deleted.
-
-### Polling System
-
-Python uses Blender's timer system to poll for requests:
-- Polls every **1 second** (configurable in `file_watcher.py`)
-- Timer runs in background, doesn't block Blender
-- Automatically stops when addon is disabled
+The socket listener uses thread-safe mechanisms:
+- Global lock (`_bridge_data_lock`) for accessing pending imports
+- Import flag (`_import_in_progress`) to prevent concurrent imports
+- Queue-based system to safely pass data from socket thread to main thread
 
 ---
 
@@ -544,8 +527,8 @@ Python uses Blender's timer system to poll for requests:
 - Validates asset directory structure
 - Detects asset type (FBX vs surface)
 
-**Request validation**: `communication/file_watcher.py::validate_request()`
-- Validates import requests (instance ID, timestamp)
+**Folder validation**: `utils/validation.py::is_folder_empty()`
+- Checks if folder is empty
 
 ---
 
@@ -719,10 +702,10 @@ def create_material_from_textures(material_name, textures, context):
     # ... existing code ...
     
     # Add Emission texture
-if 'emission' in textures and textures['emission']:
-    emission_node = load_texture(nodes, 'Emission', textures['emission'], 'sRGB')
-    if emission_node:
-        links.new(emission_node.outputs['Color'], bsdf.inputs['Emission'])
+    if 'emission' in textures and textures['emission']:
+        emission_node = load_texture(nodes, 'Emission', textures['emission'], 'sRGB')
+        if emission_node:
+            links.new(emission_node.outputs['Color'], bsdf.inputs['Emission'])
             # Set emission strength
             bsdf.inputs['Emission Strength'].default_value = 1.0
     
@@ -966,15 +949,23 @@ for obj in bpy.data.objects:
 
 Here's the step-by-step flow when an asset is imported:
 
-#### Step 1: Request Detection
-**Location**: `communication/file_watcher.py::check_import_requests()`
+#### Step 1: Socket Reception
+**Location**: `communication/quixel_bridge_socket.py::_importer_callback()`
 
-1. Timer runs every 1 second
-2. Checks for `import_request.json` in temp directory
-3. Validates request (instance ID, timestamp)
-4. If valid, deletes request file and calls `main.py::import_asset()`
+1. Socket listener receives JSON data from Quixel Bridge
+2. Parses JSON data using `parse_bridge_json()`
+3. Queues import requests in thread-safe queue
+4. Returns to listening for next connection
 
-#### Step 2: Asset Type Detection
+#### Step 2: Request Processing
+**Location**: `communication/quixel_bridge_socket.py::check_pending_imports()`
+
+1. Timer runs every 1 second (or 0.1 seconds if imports pending)
+2. Checks for queued import requests
+3. Processes one import at a time
+4. Calls `main.py::import_asset()` with request data
+
+#### Step 3: Asset Type Detection
 **Location**: `main.py::import_asset()`
 
 1. Calls `operations/asset_processor.py::detect_asset_type()`
@@ -983,51 +974,51 @@ Here's the step-by-step flow when an asset is imported:
    - **Surface**: Contains JSON + textures (no FBX)
 3. Routes to appropriate handler
 
-#### Step 3: FBX Import (if FBX asset)
+#### Step 4: FBX Import (if FBX asset)
 **Location**: `main.py::_import_fbx_asset()`
 
-**3.1: Import FBX Files**
+**4.1: Import FBX Files**
 - `operations/fbx_importer.py::find_fbx_files()`: Find all FBX files
 - `operations/fbx_importer.py::import_fbx_file()`: Import each FBX
 - Groups imported objects by base name
 
-**3.2: Correct Object Names**
+**4.2: Correct Object Names**
 - `operations/name_corrector.py::correct_object_names()`:
   - Finds canonical base name
   - Matches objects to FBX files
   - Renames objects to match naming convention
 
-**3.3: Remove Old World Roots**
+**4.3: Remove Old World Roots**
 - Detects empty parent objects from FBX import
 - Extracts rotation and scale from old roots
 - Removes old roots and reparents children
 
-**3.4: Set Transforms**
+**4.4: Set Transforms**
 - Sets detected rotation and scale on all objects
 - `operations/fbx_importer.py::apply_transforms()`: Bakes transforms into mesh
 
-**3.5: Organize by Variation**
+**4.5: Organize by Variation**
 - `operations/asset_processor.py::organize_objects_by_variation()`:
   - Groups objects by variation suffix (a, b, c, etc.)
   - Converts numeric indices to letter suffixes
 
-**3.6: Create Materials**
+**4.6: Create Materials**
 - `operations/material_creator.py::create_materials_for_all_variations()`:
   - Finds textures for each variation and LOD
   - Creates materials with hash-based caching
   - Assigns materials to objects
 
-**3.7: Create Attach Roots**
+**4.7: Create Attach Roots**
 - `operations/asset_processor.py::create_asset_hierarchy()`:
   - Calculates bounding boxes
   - Creates attach roots with spacing
   - Parents variation objects to attach roots
 
-**3.8: Cleanup**
+**4.8: Cleanup**
 - `operations/asset_processor.py::cleanup_unused_materials()`:
   - Removes temporary materials from FBX import
 
-#### Step 4: Surface Material (if surface asset)
+#### Step 5: Surface Material (if surface asset)
 **Location**: `main.py::import_asset()`
 
 1. `operations/material_creator.py::create_surface_material()`:
@@ -1035,13 +1026,6 @@ Here's the step-by-step flow when an asset is imported:
    - Finds texture files
    - Creates material
    - Assigns to selected objects (if any)
-
-#### Step 5: Completion Notification
-**Location**: `main.py::import_asset()`
-
-1. `communication/electron_bridge.py::write_import_complete()`:
-   - Writes `import_complete.json` to temp directory
-   - Electron reads this and shows notification
 
 ### Critical Order of Operations
 
@@ -1222,7 +1206,7 @@ def create_material_from_textures(material_name, textures, context):
 
 This guide has covered:
 - **Project structure**: Where everything is located
-- **Communication**: How Python and Electron talk to each other
+- **Communication**: How Python communicates with Quixel Bridge
 - **Function locations**: Where to find specific functionality
 - **Extension points**: How to customize attach roots, materials, and attributes
 - **Workflow**: Step-by-step import process

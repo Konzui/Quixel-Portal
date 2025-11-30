@@ -2428,7 +2428,7 @@ class ImportToolbar:
         self.wireframe_toggle = BL_UI_ToggleButton(wireframe_x, top_widget_y, wireframe_button_size)
         # Set icon path (fallback to "W" text if icon not found)
         addon_dir = Path(__file__).parent.parent
-        icon_path = addon_dir / "electron_app" / "assets" / "icons" / "wireframe_32.png"
+        icon_path = addon_dir / "assets" / "icons" / "wireframe_32.png"
         if icon_path.exists():
             self.wireframe_toggle.icon_path = str(icon_path)
         else:
