@@ -31,7 +31,7 @@ def load_texture(nodes, tex_type, tex_path, color_space='sRGB'):
         img = bpy.data.images.load(str(tex_path))
         img.colorspace_settings.name = color_space
         tex_node.image = img
-        print(f"    ✅ Loaded {tex_type}: {Path(tex_path).name}")
+        # Print removed to reduce console clutter
         return tex_node
     except Exception as e:
         print(f"    ❌ Failed to load {tex_type} texture {Path(tex_path).name}: {e}")
@@ -39,27 +39,44 @@ def load_texture(nodes, tex_type, tex_path, color_space='sRGB'):
         return None
 
 
-def find_texture_files(asset_dir, extensions=None):
+def find_texture_files(asset_dir, extensions=None, texture_resolution=None):
     """Find all texture files in an asset directory.
-    
+
     Args:
         asset_dir: Path to the asset directory
         extensions: Optional list of extensions to search for.
                    Defaults to common image formats.
-        
+        texture_resolution: Optional resolution filter (e.g., "2K", "4K", "8K").
+                           If specified, only textures matching this resolution will be returned.
+
     Returns:
         list: List of Path objects to texture files
     """
     if extensions is None:
         extensions = ['.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff', '.exr']
-    
+
     asset_dir = Path(asset_dir)
     texture_files = []
-    
+
     for ext in extensions:
         texture_files.extend(asset_dir.glob(f"**/*{ext}"))
         texture_files.extend(asset_dir.glob(f"**/*{ext.upper()}"))
-    
+
+    # Filter by resolution if specified
+    if texture_resolution:
+        # Normalize resolution (e.g., "2K" stays "2k")
+        resolution_lower = texture_resolution.lower()
+
+        filtered_files = []
+        for tex_file in texture_files:
+            filename_lower = tex_file.stem.lower()
+
+            # Check if filename contains the resolution string (e.g., "2k" in "wcljcaa_2K_Albedo.jpg")
+            if resolution_lower in filename_lower:
+                filtered_files.append(tex_file)
+
+        texture_files = filtered_files
+
     return texture_files
 
 

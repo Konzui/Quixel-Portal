@@ -121,7 +121,7 @@ def find_canonical_base_name(import_results):
                 base_clean = name_without_lod.rstrip('_')
                 if base_clean and len(base_clean) > 3:
                     base_name_candidates.append(base_clean)
-                    print(f"    🔍 Found candidate base name (no variation): '{base_clean}' from object '{obj_name}'")
+                    # Print removed to reduce console clutter
     
     if not base_name_candidates:
         # Fallback: try to extract from FBX filenames
@@ -144,7 +144,7 @@ def find_canonical_base_name(import_results):
     base_name_counter = Counter(base_name_candidates)
     canonical_base = base_name_counter.most_common(1)[0][0]
     
-    print(f"    ✅ Canonical base name determined: '{canonical_base}' (appears {base_name_counter[canonical_base]} time(s))")
+    # Print removed to reduce console clutter
     
     return canonical_base
 
@@ -238,9 +238,7 @@ def rename_objects_to_match(objects, fbx_mapping):
         'already_correct': 0
     }
     
-    print(f"\n  {'─'*40}")
-    print(f"  🔤 RENAMING OBJECTS TO MATCH NAMING CONVENTION")
-    print(f"  {'─'*40}")
+    # Header print removed to reduce console clutter
     
     for obj in objects:
         if obj.type != 'MESH' or not obj.data:
@@ -278,18 +276,15 @@ def rename_objects_to_match(objects, fbx_mapping):
             old_name = obj.name
             obj.name = expected_name
             stats['renamed'] += 1
-            print(f"    🔤 Renamed '{old_name}' → '{expected_name}' (confidence: {confidence})")
+            # Print removed to reduce console clutter
         else:
             # Name is completely wrong - rename it
             old_name = obj.name
             obj.name = expected_name
             stats['renamed'] += 1
-            print(f"    🔤 Renamed '{old_name}' → '{expected_name}' (confidence: {confidence}, name was incorrect)")
+            # Print removed to reduce console clutter
     
-    print(f"\n  📊 Renaming Summary:")
-    print(f"     ✅ Renamed: {stats['renamed']}")
-    print(f"     ✓ Already correct: {stats['already_correct']}")
-    print(f"     ⚠️  No match: {stats['no_match']}")
+    # Renaming summary prints removed to reduce console clutter
     
     return stats
 
@@ -303,9 +298,7 @@ def validate_lod_completeness(import_groups):
     Returns:
         dict: Validation results with missing LODs and warnings
     """
-    print(f"\n  {'─'*40}")
-    print(f"  ✅ VALIDATING LOD COMPLETENESS")
-    print(f"  {'─'*40}")
+    # Header prints removed to reduce console clutter
     
     # Extract LOD levels from FBX files
     expected_lods = set()
@@ -332,12 +325,7 @@ def validate_lod_completeness(import_groups):
     # Find missing LODs
     missing_lods = expected_lods - found_lods
     
-    if missing_lods:
-        print(f"    ⚠️  Missing LOD levels: {sorted(missing_lods)}")
-        print(f"    ℹ️  Expected LODs: {sorted(expected_lods)}")
-        print(f"    ℹ️  Found LODs: {sorted(found_lods)}")
-    else:
-        print(f"    ✅ All expected LOD levels present: {sorted(expected_lods)}")
+    # Validation result prints removed to reduce console clutter
     
     return {
         'expected_lods': expected_lods,
@@ -365,20 +353,17 @@ def correct_object_names(import_results, fallback_base_name=None):
     Returns:
         dict: Statistics and validation results, including canonical_base_name
     """
-    print(f"\n  {'─'*40}")
-    print(f"  🔍 NAME CORRECTION SYSTEM")
-    print(f"  {'─'*40}")
+    # Header and step prints removed to reduce console clutter
     
     # Step 1: Find canonical base name from correctly named objects
-    print(f"\n  Step 1: Finding canonical base name...")
     canonical_base_name = find_canonical_base_name(import_results)
     
     if not canonical_base_name:
         if fallback_base_name:
             canonical_base_name = fallback_base_name
-            print(f"    ⚠️  Using fallback base name: '{canonical_base_name}'")
+            # Print removed to reduce console clutter
         else:
-            print(f"    ⚠️  Could not determine canonical base name - skipping name correction")
+            # Print removed to reduce console clutter
             return {
                 'rename_stats': {'renamed': 0, 'skipped': 0, 'no_match': 0, 'already_correct': 0},
                 'validation': {'is_complete': False},
@@ -387,9 +372,8 @@ def correct_object_names(import_results, fallback_base_name=None):
             }
     
     # Step 2: Match objects to FBX files using canonical base name
-    print(f"\n  Step 2: Matching objects to FBX files...")
     object_to_fbx = match_objects_to_fbx(import_results, canonical_base_name)
-    print(f"    ✅ Matched {len(object_to_fbx)} object(s) to FBX files")
+    # Print removed to reduce console clutter
     
     # Step 3: Collect all objects that need checking
     all_objects = []
@@ -397,20 +381,16 @@ def correct_object_names(import_results, fallback_base_name=None):
         all_objects.extend(imported_objects)
     
     # Step 4: Rename objects
-    print(f"\n  Step 3: Renaming objects...")
     rename_stats = rename_objects_to_match(all_objects, object_to_fbx)
     
     # Step 5: Update base_name in import_results to ensure correct grouping
     # This is critical - we need to update the base_name so grouping works correctly
-    print(f"\n  Step 4: Updating base names in import results...")
     for i, (fbx_file, imported_objects, old_base_name) in enumerate(import_results):
         # Update the base_name in the tuple (we need to recreate the tuple)
         import_results[i] = (fbx_file, imported_objects, canonical_base_name)
-        if old_base_name != canonical_base_name:
-            print(f"    🔤 Updated base name for FBX '{fbx_file.name}': '{old_base_name}' → '{canonical_base_name}'")
+        # Print removed to reduce console clutter
     
     # Step 6: Validate completeness
-    print(f"\n  Step 5: Validating LOD completeness...")
     import_groups = []
     for fbx_file, imported_objects, _ in import_results:
         import_groups.append({

@@ -10,7 +10,8 @@
       "Bash(python -m py_compile:*)",
       "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" status)",
       "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" diff)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

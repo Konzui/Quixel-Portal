@@ -102,36 +102,45 @@ def detect_variation_number(obj_name):
     Returns:
         int: Variation index (0 as default if no variation detected)
     """
-    # Remove LOD suffix first to isolate the variation suffix
+    # Remove Blender's auto-numbering suffix (.001, .002, etc.) FIRST if present
+    # This happens when objects are renamed and Blender adds a number to avoid duplicates
+    # We need to remove this BEFORE removing LOD suffixes so the LOD regex patterns work correctly
+    name_without_numbering = re.sub(r'\.\d+$', '', obj_name)
+    
+    # Remove LOD suffix to isolate the variation suffix
     # Handle both standard format (LOD0, LOD1) and IOI format (_LOD_0_______)
-    name_without_lod = re.sub(r'_LOD_[_0-9]{8}$', '', obj_name, flags=re.IGNORECASE)  # IOI format
+    # Note: IOI format must be checked first because it's more specific
+    # IOI format: _LOD_ followed by exactly 8 characters (digits or underscores)
+    name_without_lod = re.sub(r'_LOD_[_0-9]{8}$', '', name_without_numbering, flags=re.IGNORECASE)  # IOI format
     name_without_lod = re.sub(r'_?LOD\d+$', '', name_without_lod, flags=re.IGNORECASE)  # Standard format
     
     # Pattern 1: _A, _B, _C (case insensitive, single letter at end)
     # Convert to index: a=0, b=1, c=2, etc.
+    # This pattern must come BEFORE the numeric patterns to prioritize letter suffixes
+    # Try to match a single letter suffix at the end
     match = re.search(r'_([a-z])$', name_without_lod, re.IGNORECASE)
     if match:
         letter = match.group(1).lower()
         index = ord(letter) - ord('a')
-        print(f"    🔍 Variation detection: '{obj_name}' -> index {index} (from letter '_{letter}')")
+        # Print removed to reduce console clutter
         return index
     
     # Pattern 2: _01, _02, _03 (numerical suffixes, 2 digits at end)
     match = re.search(r'_(\d{2})$', name_without_lod)
     if match:
         index = int(match.group(1))
-        print(f"    🔍 Variation detection: '{obj_name}' -> index {index} (from '_{match.group(1)}')")
+        # Print removed to reduce console clutter
         return index
     
     # Pattern 3: Single digit at end (1, 2, 3)
     match = re.search(r'_(\d)$', name_without_lod)
     if match:
         index = int(match.group(1))
-        print(f"    🔍 Variation detection: '{obj_name}' -> index {index} (from '_{match.group(1)}')")
+        # Print removed to reduce console clutter
         return index
     
     # Default: first variation
-    print(f"    🔍 Variation detection: '{obj_name}' -> index 0 (default, no pattern found)")
+    # Print removed to reduce console clutter
     return 0
 
 
@@ -155,7 +164,6 @@ def index_to_letter_suffix(index):
         index = 0
     
     suffix = ''
-    index_copy = index
     
     # Handle indices 0-25 (a-z)
     if index < 26:
@@ -169,7 +177,7 @@ def index_to_letter_suffix(index):
             if index < 0:
                 break
     
-    print(f"    🔤 Index {index_copy} → suffix '{suffix}'")
+    # Print removed to reduce console clutter
     return suffix
 
 

@@ -18,7 +18,7 @@ def create_preview_scene(context, base_name="__QuixelPreview__"):
     Returns:
         bpy.types.Scene: The created preview scene
     """
-    # Clean up any existing preview scenes first
+    # Clean up any existing preview scenes first (this removes all objects in them)
     cleanup_orphaned_preview_scenes()
 
     # Get original scene to copy settings from
@@ -26,6 +26,14 @@ def create_preview_scene(context, base_name="__QuixelPreview__"):
 
     # Create new temporary scene
     temp_scene = bpy.data.scenes.new(name=base_name)
+    
+    # Ensure the new scene is completely empty (no default objects)
+    # Remove any default objects that might have been created
+    for obj in list(temp_scene.collection.objects):
+        try:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        except:
+            pass
 
     # Copy important settings from original scene
     temp_scene.world = original_scene.world  # Keep same lighting/environment
@@ -82,7 +90,7 @@ def switch_to_scene(context, target_scene):
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
 
-        print(f"✅ Switched to scene: {target_scene.name}")
+        # Print removed to reduce console clutter
         return True
 
     except Exception as e:
@@ -101,44 +109,73 @@ def transfer_assets_to_original_scene(
     Args:
         temp_scene: Temporary preview scene
         original_scene: User's original scene
-        imported_objects: List of objects to transfer
+        imported_objects: List of objects to transfer (should include attach roots)
         imported_materials: List of materials to transfer
 
     Returns:
-        list: List of successfully transferred objects
+        list: List of successfully transferred objects (including all children)
     """
-    print(f"\n{'='*80}")
-    print(f"📦 TRANSFERRING ASSETS FROM TEMP SCENE TO ORIGINAL SCENE")
-    print(f"{'='*80}")
+    # Header prints removed to reduce console clutter
 
     transferred_objects = []
+    transferred_names = set()  # Track transferred object names to avoid duplicates
 
-    # Transfer objects from temp scene to original scene
+    # First, collect all objects to transfer (including children of attach roots)
+    all_objects_to_transfer = []
     for obj in imported_objects:
         try:
             # Check if object still exists
             if obj.name not in bpy.data.objects:
-                print(f"  ⚠️ Skipping deleted object: {obj.name}")
+                # Print removed to reduce console clutter
                 continue
+            
+            # Add the object itself
+            if obj.name not in transferred_names:
+                all_objects_to_transfer.append(obj)
+                transferred_names.add(obj.name)
+            
+            # If this is an attach root, also collect all its children
+            if obj.get("ioiAttachRootNode"):
+                for child in obj.children:
+                    if child.name not in transferred_names:
+                        all_objects_to_transfer.append(child)
+                        transferred_names.add(child.name)
+        except (ReferenceError, AttributeError, KeyError):
+            continue
 
-            # Unlink from all collections in temp scene
-            for collection in obj.users_collection:
-                collection.objects.unlink(obj)
+    # Transfer all objects (attach roots and their children)
+    for obj in all_objects_to_transfer:
+        try:
+            # Double-check object still exists
+            if obj.name not in bpy.data.objects:
+                continue
+            
+            # Get all collections this object is linked to
+            collections_to_unlink = list(obj.users_collection)
+            
+            # Unlink from all collections (including temp scene's collection)
+            for collection in collections_to_unlink:
+                try:
+                    collection.objects.unlink(obj)
+                except:
+                    pass  # Collection might already be deleted or object not in it
 
             # Link to original scene's active collection
             original_scene.collection.objects.link(obj)
             transferred_objects.append(obj)
 
-            print(f"  ✅ Transferred: {obj.name}")
+            # Print removed to reduce console clutter
 
         except Exception as e:
-            print(f"  ⚠️ Failed to transfer '{obj.name}': {e}")
+            # Print removed to reduce console clutter
+            import traceback
+            traceback.print_exc()
 
     # Materials are stored globally in bpy.data.materials
     # They're automatically available in all scenes, no transfer needed
-    print(f"\n  📊 Materials: {len(imported_materials)} material(s) already available globally")
+    # Print removed to reduce console clutter
 
-    print(f"\n  ✅ Transferred {len(transferred_objects)} object(s) to original scene")
+    # Print removed to reduce console clutter
 
     return transferred_objects
 
@@ -156,15 +193,27 @@ def cleanup_preview_scene(temp_scene):
     scene_name = temp_scene.name
 
     try:
+        # Before deleting the scene, ensure all objects are unlinked from it
+        # This prevents objects from being deleted if they're only in this scene
+        objects_in_scene = list(temp_scene.collection.objects)
+        for obj in objects_in_scene:
+            try:
+                # Unlink from temp scene's collection
+                temp_scene.collection.objects.unlink(obj)
+            except:
+                pass  # Object might already be unlinked
+        
         # Remove the scene
         # Objects that are ONLY in this scene will be deleted
         # Objects linked to other scenes will remain
         bpy.data.scenes.remove(temp_scene, do_unlink=True)
 
-        print(f"✅ Deleted preview scene: {scene_name}")
+        # Print removed to reduce console clutter
 
     except Exception as e:
         print(f"⚠️ Failed to delete preview scene: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def cleanup_orphaned_preview_scenes():

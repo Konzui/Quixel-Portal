@@ -62,11 +62,7 @@ def import_fbx_file(filepath, context):
             if active_object:
                 context.view_layer.objects.active = active_object
             return [], None
-        
-        print(f"  🔧 Imported {len(imported_objects)} raw object(s):")
-        for obj in imported_objects:
-            print(f"     - {obj.name} (type: {obj.type}, scale: {obj.scale}, rotation: ({math.degrees(obj.rotation_euler.x):.1f}°, {math.degrees(obj.rotation_euler.y):.1f}°, {math.degrees(obj.rotation_euler.z):.1f}°))")
-        
+
         # Get the base name from the imported object names (not the filename)
         object_names = [obj.name for obj in imported_objects]
         main_object_name = object_names[0]  # Start with first object
@@ -75,17 +71,16 @@ def import_fbx_file(filepath, context):
             if not any(indicator in obj_name.lower() for indicator in ['_child', '_helper', '_bone', '_armature']):
                 main_object_name = obj_name
                 break
-        
+
         base_name = get_base_name(main_object_name)
-        
+
         # Restore previous selection
         bpy.ops.object.select_all(action='DESELECT')
         for obj in selected_objects:
             obj.select_set(True)
         if active_object:
             context.view_layer.objects.active = active_object
-        
-        print(f"  ✅ Successfully imported (base name: '{base_name}')")
+
         return imported_objects, base_name
         
     except Exception as e:
@@ -131,21 +126,20 @@ def apply_transforms(objects):
     """
     import math
     
-    print(f"\n  🔧 APPLYING TRANSFORMS TO {len(objects)} OBJECTS:")
+    # Header and detail prints removed to reduce console clutter
     
     failed_objects = []
     
     for obj in objects:
         if obj.type != 'MESH' or not obj.data:
-            print(f"    ⏭️  Skipping non-mesh: {obj.name}")
+            # Print removed to reduce console clutter
             continue
         
         # Store original values for debug
         orig_scale = obj.scale.copy()
         orig_rotation = obj.rotation_euler.copy()
         
-        print(f"    🔧 Object: {obj.name}")
-        print(f"       BEFORE: scale={orig_scale}, rotation=({math.degrees(orig_rotation.x):.1f}°, {math.degrees(orig_rotation.y):.1f}°, {math.degrees(orig_rotation.z):.1f}°)")
+        # Print removed to reduce console clutter
         
         # Select object
         bpy.ops.object.select_all(action='DESELECT')
@@ -156,28 +150,22 @@ def apply_transforms(objects):
         # This bakes them into the mesh vertex positions
         bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
         
-        print(f"       AFTER:  scale={obj.scale}, rotation=({math.degrees(obj.rotation_euler.x):.1f}°, {math.degrees(obj.rotation_euler.y):.1f}°, {math.degrees(obj.rotation_euler.z):.1f}°)")
+        # Print removed to reduce console clutter
         
         # Verify transforms are now neutral
         scale_ok = all(abs(s - 1.0) < 0.001 for s in obj.scale)
         rotation_ok = all(abs(r) < 0.001 for r in obj.rotation_euler)
         
         if scale_ok and rotation_ok:
-            print(f"       ✅ Transforms applied and baked into mesh geometry")
+            # Print removed to reduce console clutter
+            pass
         else:
-            print(f"       ⚠️  WARNING: Transforms not fully neutral!")
-            print(f"          Scale: {obj.scale} (expected: ~1.0, 1.0, 1.0)")
-            print(f"          Rotation: {obj.rotation_euler} (expected: ~0, 0, 0)")
+            # Print removed to reduce console clutter
             failed_objects.append(obj.name)
     
     # Clear selection
     bpy.ops.object.select_all(action='DESELECT')
     
-    # Report any failures
-    if failed_objects:
-        print(f"\n  ⚠️  {len(failed_objects)} object(s) have non-neutral transforms:")
-        for name in failed_objects:
-            print(f"     - {name}")
-    else:
-        print(f"\n  ✅ All transforms verified as neutral (scale=1, rotation=0)")
+    # Report any failures (prints removed to reduce console clutter)
+    # Failed objects are still tracked in failed_objects list for potential future use
 

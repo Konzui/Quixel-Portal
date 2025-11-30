@@ -100,42 +100,77 @@ class QUIXEL_OT_import_confirm(bpy.types.Operator):
             self.cancel(context)
             return {'CANCELLED'}
 
+        # Check if modifier keys are pressed (ALT, SHIFT, CTRL)
+        # If so, always allow viewport navigation
+        has_modifiers = event.alt or event.shift or event.ctrl or event.oskey
+        
         # Handle mouse movement
         if event.type == 'MOUSEMOVE':
-            _active_toolbar.handle_mouse_move(
+            # If modifiers are pressed, always pass through for viewport navigation
+            if has_modifiers:
+                return {'PASS_THROUGH'}
+            
+            # Handle mouse move in toolbar (returns True if dragging)
+            is_dragging = _active_toolbar.handle_mouse_move(
                 event.mouse_region_x,
                 event.mouse_region_y
             )
-            context.area.tag_redraw()
-            # Pass through to allow normal Blender interaction
-            return {'PASS_THROUGH'}
+
+            # Tag for redraw if context is valid
+            if context.area:
+                context.area.tag_redraw()
+
+            # Only consume if we're actually dragging the slider
+            # Don't consume just because mouse button is pressed (might be viewport drag)
+            if is_dragging:
+                return {'RUNNING_MODAL'}
+            else:
+                # Pass through to allow normal Blender interaction
+                return {'PASS_THROUGH'}
 
         # Handle mouse button press
         elif event.type == 'LEFTMOUSE':
             if event.value == 'PRESS':
+                # If modifiers are pressed, always pass through for viewport navigation
+                if has_modifiers:
+                    return {'PASS_THROUGH'}
+                
                 self._mouse_pressed = True
-                # Only consume the event if we clicked on a button
+                # Only consume the event if we clicked on a widget
                 if _active_toolbar.handle_mouse_down(
                     event.mouse_region_x,
                     event.mouse_region_y
                 ):
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
                     # Click was outside toolbar, pass through
+                    self._mouse_pressed = False  # Reset since we didn't click on toolbar
                     return {'PASS_THROUGH'}
 
-            elif event.value == 'RELEASE' and self._mouse_pressed:
-                self._mouse_pressed = False
-                # Only consume the event if we released on a button
-                if _active_toolbar.handle_mouse_up(
-                    event.mouse_region_x,
-                    event.mouse_region_y
-                ):
-                    context.area.tag_redraw()
-                    return {'RUNNING_MODAL'}
+            elif event.value == 'RELEASE':
+                # If modifiers are pressed, always pass through
+                if has_modifiers:
+                    self._mouse_pressed = False
+                    return {'PASS_THROUGH'}
+                
+                # Only handle release if we were tracking a press
+                if self._mouse_pressed:
+                    self._mouse_pressed = False
+                    # Only consume the event if we released on a widget
+                    if _active_toolbar.handle_mouse_up(
+                        event.mouse_region_x,
+                        event.mouse_region_y
+                    ):
+                        if context.area:
+                            context.area.tag_redraw()
+                        return {'RUNNING_MODAL'}
+                    else:
+                        # Release was outside toolbar, pass through
+                        return {'PASS_THROUGH'}
                 else:
-                    # Release was outside toolbar, pass through
+                    # We weren't tracking this press, pass through
                     return {'PASS_THROUGH'}
 
         # Allow viewport navigation
@@ -187,15 +222,40 @@ def show_import_toolbar(context, imported_objects, imported_materials, materials
     """
     global _active_toolbar, _draw_handler, _mouse_tracker_running
 
+    # Always use fresh context to avoid stale references
+    try:
+        context = bpy.context
+    except:
+        print("⚠️ Could not get valid context")
+        return {'CANCELLED'}
+    
+    # Validate context before proceeding
+    try:
+        if context.window_manager is None:
+            print("⚠️ Context window_manager is invalid")
+            return {'CANCELLED'}
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print("⚠️ Context scene is invalid")
+            return {'CANCELLED'}
+    except (AttributeError, KeyError, ReferenceError):
+        print("⚠️ Context validation failed")
+        return {'CANCELLED'}
+
     # Find a 3D viewport
     area_3d = None
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'VIEW_3D':
+    try:
+        for window in context.window_manager.windows:
+            if window is None or window.screen is None:
+                continue
+            for area in window.screen.areas:
+                if area is None or area.type != 'VIEW_3D':
+                    continue
                 area_3d = area
                 break
-        if area_3d:
-            break
+            if area_3d:
+                break
+    except (AttributeError, ReferenceError):
+        pass
 
     if not area_3d:
         print("⚠️ No 3D Viewport found - cannot show toolbar")
@@ -247,29 +307,68 @@ def show_import_toolbar(context, imported_objects, imported_materials, materials
     # Start modal operator for mouse handling
     # We need to do this with proper context override
     try:
+        # Validate all components before creating override
+        if not context.window_manager.windows:
+            print("⚠️ No windows available for modal operator")
+            return {'CANCELLED'}
+        
+        window = context.window_manager.windows[0]
+        if window is None or window.screen is None:
+            print("⚠️ Invalid window for modal operator")
+            return {'CANCELLED'}
+        
+        region = next((r for r in area_3d.regions if r.type == 'WINDOW'), None)
+        if region is None:
+            print("⚠️ No WINDOW region found in viewport")
+            return {'CANCELLED'}
+        
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print("⚠️ Invalid scene for modal operator")
+            return {'CANCELLED'}
+        
         override = {
-            'window': bpy.context.window_manager.windows[0],
-            'screen': bpy.context.window_manager.windows[0].screen,
+            'window': window,
+            'screen': window.screen,
             'area': area_3d,
-            'region': next((r for r in area_3d.regions if r.type == 'WINDOW'), None),
+            'region': region,
+            'scene': context.scene,
+            'view_layer': context.view_layer,
         }
 
-        with bpy.context.temp_override(**override):
+        with context.temp_override(**override):
             bpy.ops.quixel.import_confirm('INVOKE_DEFAULT')
     except Exception as e:
         print(f"⚠️ Could not start modal operator: {e}")
+        import traceback
+        traceback.print_exc()
         # If modal operator fails, we'll rely on manual cleanup
 
     # Tag viewport for redraw
     area_3d.tag_redraw()
 
-    print("✅ Import confirmation toolbar displayed")
+    # Print removed to reduce console clutter
     return {'FINISHED'}
 
 
 def cleanup_toolbar():
     """Remove toolbar and handlers."""
     global _active_toolbar, _draw_handler, _mouse_tracker_running
+
+    # Cancel any running modal operators first
+    try:
+        # Try to cancel the modal operator if it's still running
+        # We need to check all windows for active modal handlers
+        for window in bpy.context.window_manager.windows:
+            # Check if there's an active modal operator
+            if hasattr(window, 'modal_handler') and window.modal_handler:
+                # Try to cancel it
+                try:
+                    if hasattr(window.modal_handler, 'cancel'):
+                        window.modal_handler.cancel(bpy.context)
+                except:
+                    pass
+    except:
+        pass
 
     # Hide toolbar
     if _active_toolbar:
@@ -288,9 +387,12 @@ def cleanup_toolbar():
     _mouse_tracker_running = False
 
     # Tag all 3D viewports for redraw
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.tag_redraw()
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+    except:
+        pass
 
-    print("✅ Toolbar cleaned up")
+    # Print removed to reduce console clutter

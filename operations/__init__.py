@@ -4,7 +4,6 @@ This package contains modules for importing FBX files, creating materials,
 and processing assets.
 """
 
-from .portal_launcher import open_quixel_portal
 from .fbx_importer import (
     find_fbx_files,
     import_fbx_file,
@@ -40,7 +39,6 @@ from .name_corrector import (
 )
 
 __all__ = [
-    'open_quixel_portal',
     'find_fbx_files',
     'import_fbx_file',
     'group_imported_objects',

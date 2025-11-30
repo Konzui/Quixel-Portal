@@ -79,9 +79,9 @@ def create_material_from_textures(material_name, textures, context):
             links.new(opacity_node.outputs['Color'], bsdf.inputs['Alpha'])
             # Enable alpha blending for the material
             mat.blend_method = 'BLEND'
-            print(f"    ✅ Enabled alpha blending for material")
+            # Print removed to reduce console clutter
     
-    print(f"  🎨 Created material: {material_name}")
+    # Print removed to reduce console clutter
     return mat
 
 
@@ -111,21 +111,22 @@ def get_texture_hash(textures):
     return hash_obj.hexdigest()[:12]  # Use first 12 chars for readability
 
 
-def find_textures_for_variation(asset_dir, variation_suffix, import_groups):
+def find_textures_for_variation(asset_dir, variation_suffix, import_groups, texture_resolution=None):
     """Extract texture paths organized by LOD level for a specific variation.
-    
+
     Args:
         asset_dir: Path to the asset directory
         variation_suffix: Variation suffix (e.g., 'a', 'b', '00', '01')
         import_groups: List of import groups containing FBX files and objects
-        
+        texture_resolution: Optional texture resolution filter (e.g., "2K", "4K", "8K")
+
     Returns:
         dict: Dictionary structure: {lod_level: {'albedo': path, 'roughness': path, ...}}
     """
     asset_dir = Path(asset_dir)
-    
-    # Find all texture files in the asset directory
-    texture_files = find_texture_files(asset_dir)
+
+    # Find all texture files in the asset directory, filtering by resolution if specified
+    texture_files = find_texture_files(asset_dir, texture_resolution=texture_resolution)
     
     if not texture_files:
         return {}
@@ -340,15 +341,16 @@ def create_surface_material(asset_dir, context):
     return True
 
 
-def create_materials_for_all_variations(asset_dir, attach_root_base_name, variations, all_import_groups, context):
+def create_materials_for_all_variations(asset_dir, attach_root_base_name, variations, all_import_groups, context, texture_resolution=None):
     """Create materials for all variations using hash-based caching to optimize material reuse.
-    
+
     Args:
         asset_dir: Path to the asset directory
         attach_root_base_name: Base name for attach roots (without variation suffix)
         variations: Dictionary mapping variation_suffix to list of objects
         all_import_groups: List of all import groups (FBX files and their objects)
         context: Blender context
+        texture_resolution: Optional texture resolution from Bridge (e.g., "2K", "4K", "8K")
     """
     lod_pattern = re.compile(r'_?LOD(\d+)', re.IGNORECASE)
     
@@ -366,10 +368,10 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
     
     # Process each variation
     for variation_suffix in sorted(variations.keys()):
-        print(f"\n      🎨 Processing materials for variation '_{variation_suffix}':")
+        # Print removed to reduce console clutter
         
         # Get textures for this variation
-        variation_textures = find_textures_for_variation(asset_dir, variation_suffix, all_import_groups)
+        variation_textures = find_textures_for_variation(asset_dir, variation_suffix, all_import_groups, texture_resolution)
         variation_objects = variations[variation_suffix]
         attach_root_name = f"{attach_root_base_name}_{variation_suffix}"
         
@@ -404,13 +406,13 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
             if texture_hash in material_cache:
                 # Reuse existing material
                 mat = material_cache[texture_hash]
-                print(f"         ♻️  LOD{lod_level}: Reusing material '{mat.name}' (hash: {texture_hash})")
+                # Print removed to reduce console clutter
             else:
                 # Create new material
                 material_name = f"{attach_root_name}_LOD{lod_level}"
                 mat = create_material_from_textures(material_name, textures, context)
                 material_cache[texture_hash] = mat
-                print(f"         ✨ LOD{lod_level}: Created new material '{material_name}' (hash: {texture_hash})")
+                # Print removed to reduce console clutter
             
             # Assign material to objects from this LOD level
             if lod_level in lod_objects:
@@ -419,15 +421,11 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
                     obj.data.materials.clear()
                     # Assign our custom material
                     obj.data.materials.append(mat)
-                    print(f"            ✅ Assigned to: {obj.name}")
+                    # Print removed to reduce console clutter
     
-    # Summary
-    unique_materials = len(material_cache)
-    total_variations = len(variations)
-    total_lods = len(all_lod_levels)
-    max_possible = total_variations * total_lods
-    
-    print(f"\n    📊 MATERIAL OPTIMIZATION SUMMARY:")
-    print(f"       Created {unique_materials} unique material(s) for {total_variations} variation(s) × {total_lods} LOD(s)")
-    print(f"       Saved {max_possible - unique_materials} redundant material(s) ({100 * (1 - unique_materials/max(max_possible, 1)):.1f}% reduction)")
+    # Summary prints removed to reduce console clutter
+    # unique_materials = len(material_cache)
+    # total_variations = len(variations)
+    # total_lods = len(all_lod_levels)
+    # max_possible = total_variations * total_lods
 

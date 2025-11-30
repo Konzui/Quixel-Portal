@@ -1,17 +1,17 @@
 """Main application flow orchestrator.
 
 This module provides high-level workflow functions that coordinate between
-communication, operations, and utilities. It abstracts away the details of
-Electron communication and provides a clean interface for the UI layer.
+communication, operations, and utilities. It provides a clean interface
+for asset import and processing.
 """
 
 import bpy
 import re
 import math
 import mathutils
+import time
 from pathlib import Path
 
-from .operations.portal_launcher import open_quixel_portal
 from .operations.fbx_importer import (
     find_fbx_files,
     import_fbx_file,
@@ -29,7 +29,6 @@ from .operations.asset_processor import (
     cleanup_unused_materials,
     set_ioi_lod_properties_for_objects,
 )
-from .communication.electron_bridge import write_import_complete
 from .utils.naming import get_name_from_json, get_base_name
 from .utils.texture_loader import find_texture_files
 from .utils.validation import is_folder_empty, check_folder_contents
@@ -44,7 +43,251 @@ from .utils.scene_manager import (
 from .ui.import_modal import show_import_toolbar
 
 
-def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup=True):
+# Global performance tracking
+_performance_data = {
+    'import_start_time': None,
+    'import_times': {},
+    'lod_switch_times': [],
+    'accept_start_time': None,
+    'cancel_start_time': None,
+    'total_operations': 0,
+}
+
+
+def _format_time_ms(seconds):
+    """Format time in seconds to milliseconds with 6 decimal places.
+    
+    Args:
+        seconds: Time in seconds
+        
+    Returns:
+        str: Formatted time string (e.g., "123.456789 ms")
+    """
+    ms = seconds * 1000.0
+    return f"{ms:.6f} ms"
+
+
+def _print_performance_breakdown():
+    """Print a detailed performance breakdown after accept/cancel."""
+    global _performance_data
+    
+    print(f"⏱️  PERFORMANCE BREAKDOWN")
+    
+    # Import timing
+    if _performance_data['import_start_time']:
+        total_import_time = time.time() - _performance_data['import_start_time']
+        print(f"\n📥 ASSET IMPORT:")
+        print(f"   Total Import Time: {_format_time_ms(total_import_time)}")
+        
+        if _performance_data['import_times']:
+            print(f"   Breakdown:")
+            for step_name, step_time in _performance_data['import_times'].items():
+                percentage = (step_time / total_import_time * 100) if total_import_time > 0 else 0
+                print(f"      - {step_name}: {_format_time_ms(step_time)} ({percentage:.2f}%)")
+    
+    # LOD switching
+    if _performance_data['lod_switch_times']:
+        total_lod_time = sum(_performance_data['lod_switch_times'])
+        avg_lod_time = total_lod_time / len(_performance_data['lod_switch_times'])
+        min_lod_time = min(_performance_data['lod_switch_times'])
+        max_lod_time = max(_performance_data['lod_switch_times'])
+        
+        print(f"\n🎚️  LOD SWITCHING:")
+        print(f"   Total Switches: {len(_performance_data['lod_switch_times'])}")
+        print(f"   Total Time: {_format_time_ms(total_lod_time)}")
+        print(f"   Average Time: {_format_time_ms(avg_lod_time)}")
+        print(f"   Min Time: {_format_time_ms(min_lod_time)}")
+        print(f"   Max Time: {_format_time_ms(max_lod_time)}")
+    
+    # Accept/Cancel timing
+    if _performance_data['accept_start_time']:
+        accept_time = time.time() - _performance_data['accept_start_time']
+        print(f"\n✅ ACCEPT OPERATION:")
+        print(f"   Time: {_format_time_ms(accept_time)}")
+    
+    if _performance_data['cancel_start_time']:
+        cancel_time = time.time() - _performance_data['cancel_start_time']
+        print(f"\n❌ CANCEL OPERATION:")
+        print(f"   Time: {_format_time_ms(cancel_time)}")
+    
+    # Total operations
+    print(f"\n📊 SUMMARY:")
+    print(f"   Total Operations Tracked: {_performance_data['total_operations']}")
+    
+    
+    # Reset performance data
+    _performance_data = {
+        'import_start_time': None,
+        'import_times': {},
+        'lod_switch_times': [],
+        'accept_start_time': None,
+        'cancel_start_time': None,
+        'total_operations': 0,
+    }
+
+
+def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=True):
+    """Select imported objects and frame the view to show them.
+    
+    Args:
+        imported_objects: List of imported Blender objects to select and frame
+        context: Optional Blender context (defaults to bpy.context)
+        skip_if_temp_scene: If True, skip framing if we're in a temp preview scene
+    """
+    if not imported_objects:
+        return
+    
+    # Always use fresh context to avoid stale references
+    try:
+        context = bpy.context
+    except:
+        print(f"  ⚠️ Could not get valid context for framing")
+        return
+    
+    # Skip framing in temp scenes to avoid crashes with invalid depsgraph
+    if skip_if_temp_scene:
+        try:
+            scene_name = context.scene.name if context.scene else None
+            if scene_name and scene_name.startswith("__QuixelPreview__"):
+                print(f"  ⚠️ Skipping frame in temp preview scene to avoid crashes")
+                return
+        except:
+            pass
+    
+    # Validate context is valid and scene exists
+    try:
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print(f"  ⚠️ Context scene is invalid, skipping frame")
+            return
+        if context.window_manager is None:
+            print(f"  ⚠️ Context window_manager is invalid, skipping frame")
+            return
+    except (AttributeError, KeyError, ReferenceError):
+        print(f"  ⚠️ Context validation failed, skipping frame")
+        return
+    
+    # Filter to only valid, existing objects with proper validation
+    valid_objects = []
+    for obj in imported_objects:
+        try:
+            # Check if object reference is valid and object exists in data
+            if obj is None:
+                continue
+            # Re-fetch from bpy.data.objects to ensure reference is valid
+            if obj.name in bpy.data.objects:
+                # Verify the object is the same one (not a new object with same name)
+                fetched_obj = bpy.data.objects[obj.name]
+                if fetched_obj == obj:
+                    # Also verify object is in the current scene
+                    if obj.name in context.scene.objects:
+                        valid_objects.append(obj)
+        except (ReferenceError, AttributeError, KeyError):
+            # Object reference is invalid, skip it
+            continue
+    
+    if not valid_objects:
+        return
+    
+    try:
+        # Deselect all objects first
+        bpy.ops.object.select_all(action='DESELECT')
+        
+        # Select all imported objects with additional safety checks
+        selected_count = 0
+        for obj in valid_objects:
+            try:
+                # Double-check object is still valid before selecting
+                if obj and obj.name in bpy.data.objects and bpy.data.objects[obj.name] == obj:
+                    if obj.name in context.scene.objects:
+                        obj.select_set(True)
+                        selected_count += 1
+            except (ReferenceError, AttributeError, KeyError):
+                # Object became invalid, skip it
+                continue
+        
+        if selected_count == 0:
+            return
+        
+        # Set active object (use first valid object)
+        if valid_objects:
+            try:
+                first_obj = valid_objects[0]
+                if first_obj and first_obj.name in bpy.data.objects and bpy.data.objects[first_obj.name] == first_obj:
+                    if first_obj.name in context.scene.objects:
+                        context.view_layer.objects.active = first_obj
+            except (ReferenceError, AttributeError, KeyError):
+                pass
+        
+        # Frame the selected objects in the viewport
+        # Find a 3D viewport area with proper context validation
+        try:
+            for window in context.window_manager.windows:
+                if window is None:
+                    continue
+                if window.screen is None:
+                    continue
+                for area in window.screen.areas:
+                    if area is None or area.type != 'VIEW_3D':
+                        continue
+                    # Override context to use this area
+                    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                    if region is None:
+                        continue
+                    
+                    # Validate all context components before using
+                    if context.scene is None or context.scene.name not in bpy.data.scenes:
+                        continue
+                    if context.view_layer is None:
+                        continue
+                        
+                    override = {
+                        'window': window,
+                        'screen': window.screen,
+                        'area': area,
+                        'region': region,
+                        'view_layer': context.view_layer,
+                        'scene': context.scene,
+                    }
+                    
+                    # Use context override to frame selected
+                    # Wrap in multiple try-except layers to catch any possible crash
+                    try:
+                        # Double-check scene still exists before framing
+                        if context.scene.name not in bpy.data.scenes:
+                            continue
+                        
+                        # Use a fresh context override to avoid stale references
+                        with context.temp_override(**override):
+                            # This operation can crash if depsgraph is invalid
+                            # Catch all possible exceptions including SystemExit
+                            try:
+                                bpy.ops.view3d.view_selected()
+                            except (SystemExit, KeyboardInterrupt):
+                                # Re-raise these
+                                raise
+                            except Exception as e:
+                                print(f"  ⚠️ Could not frame view (non-critical): {e}")
+                                continue
+                    except (SystemExit, KeyboardInterrupt):
+                        # Re-raise these
+                        raise
+                    except Exception as e:
+                        # Catch any other exception that might cause a crash
+                        print(f"  ⚠️ Could not create context override for framing: {e}")
+                        continue
+                    
+                    # Only frame in the first 3D viewport found
+                    # Print removed to reduce console clutter
+                    return
+        except Exception as e:
+            print(f"  ⚠️ Could not find viewport for framing: {e}")
+        
+    except Exception as e:
+        print(f"  ⚠️ Could not frame imported objects: {e}")
+        # Non-critical error, continue anyway
+
+
+def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup=True, texture_resolution=None):
     """Main entry point for importing an asset.
 
     This function orchestrates the entire import process:
@@ -54,20 +297,24 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     4. Creates materials and assigns them
     5. Creates asset hierarchy
     6. Cleans up temporary materials
-    7. Notifies Electron of completion
 
     Args:
         asset_path: Path to the asset directory
         thumbnail_path: Optional path to thumbnail image
         asset_name: Optional asset name override
         glacier_setup: Whether to show toolbar with import settings (default: True)
+        texture_resolution: Optional texture resolution from Bridge (e.g., "2K", "4K", "8K")
 
     Returns:
         dict: Blender operator result {'FINISHED'} or {'CANCELLED'}
     """
-    print(f"\n{'='*80}")
-    print(f"🚀 STARTING QUIXEL ASSET IMPORT")
-    print(f"{'='*80}")
+    
+    # Start performance tracking
+    global _performance_data
+    _performance_data['import_start_time'] = time.time()
+    _performance_data['import_times'] = {}
+    _performance_data['lod_switch_times'] = []
+    _performance_data['total_operations'] = 0
 
     # Cancel any active toolbar before starting new import
     from .ui.import_modal import get_active_toolbar
@@ -125,9 +372,6 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
                 if json_name:
                     asset_name = json_name
             
-            # Send notification to Electron
-            write_import_complete(asset_dir, asset_name, thumbnail_path)
-            
             return {'FINISHED'}
         else:
             print(f"❌ Failed to create surface material")
@@ -135,14 +379,14 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     
     elif asset_type == 'fbx':
         # Handle FBX import
-        return _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup)
+        return _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup, texture_resolution)
     
     else:
         print(f"⚠️ No FBX files or surface materials found in {asset_dir}")
         return {'CANCELLED'}
 
 
-def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup=True):
+def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup=True, texture_resolution=None):
     """Import an FBX asset with all processing steps.
 
     Args:
@@ -152,10 +396,31 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         thumbnail_path: Optional thumbnail path
         asset_name: Optional asset name
         glacier_setup: Whether to show toolbar with import settings (default: True)
+        texture_resolution: Optional texture resolution from Bridge (e.g., "2K", "4K", "8K")
 
     Returns:
         dict: Blender operator result
     """
+    # Clean up any leftover state from previous imports
+    from .ui.import_modal import cleanup_toolbar
+    cleanup_toolbar()
+    
+    # Always use fresh context to avoid stale references
+    try:
+        context = bpy.context
+    except:
+        print(f"❌ Could not get valid context")
+        return {'CANCELLED'}
+    
+    # Validate context before proceeding
+    try:
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print(f"❌ Context scene is invalid")
+            return {'CANCELLED'}
+    except (AttributeError, KeyError, ReferenceError):
+        print(f"❌ Context validation failed")
+        return {'CANCELLED'}
+    
     # Store original scene reference BEFORE creating temp scene
     original_scene = context.scene
     original_collection = context.collection
@@ -163,11 +428,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     # Only create preview scene if Glacier setup is enabled
     temp_scene = None
     if glacier_setup:
-        print(f"\n{'='*80}")
-        print(f"🎬 SCENE SETUP: CREATING TEMPORARY PREVIEW SCENE")
-        print(f"{'='*80}")
-        print(f"  📌 Original scene: {original_scene.name}")
-
         # Create temporary preview scene for import
         temp_scene = create_preview_scene(context)
 
@@ -178,14 +438,20 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
         # Update context after scene switch
         context = bpy.context
-
-        print(f"  ✅ Now working in temporary preview scene: {temp_scene.name}")
-    else:
-        print(f"\n{'='*80}")
-        print(f"🎬 SCENE SETUP: IMPORTING DIRECTLY TO CURRENT SCENE")
-        print(f"{'='*80}")
-        print(f"  📌 Current scene: {original_scene.name}")
-        print(f"  ⚠️ Glacier setup disabled - no preview scene will be created")
+        
+        # Ensure temp scene is completely clean - remove any leftover objects
+        # This prevents interference from previous imports
+        try:
+            objects_to_remove = [obj for obj in temp_scene.collection.objects]
+            for obj in objects_to_remove:
+                try:
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                except:
+                    pass
+            if objects_to_remove:
+                print(f"  🧹 Cleaned {len(objects_to_remove)} leftover object(s) from temp scene")
+        except Exception as e:
+            print(f"  ⚠️ Could not clean temp scene: {e}")
 
     # Track all imported objects and materials for toolbar cleanup
     all_imported_objects_tracker = []
@@ -195,25 +461,17 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     fbx_files = find_fbx_files(asset_dir)
 
     if not fbx_files:
-        print(f"⚠️ No FBX files found")
+        print(f"❌ No FBX files found")
         # Clean up temp scene before returning
         if temp_scene:
             switch_to_scene(bpy.context, original_scene)
             cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
-    
-    print(f"📦 Found {len(fbx_files)} FBX file(s) to import:")
-    for fbx_file in fbx_files:
-        print(f"   - {fbx_file.name}")
-    
+
     # STEP 1: Import all FBX files
-    print(f"\n{'='*80}")
-    print(f"📥 STEP 1: IMPORTING FBX FILES")
-    print(f"{'='*80}")
-    
+    step_start = time.time()
     import_results = []
     for fbx_file in fbx_files:
-        print(f"\n🔄 Importing: {fbx_file.name}")
         imported_objects, base_name = import_fbx_file(fbx_file, context)
         if imported_objects:
             import_results.append((fbx_file, imported_objects, base_name))
@@ -226,12 +484,13 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
             cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
     
+    _performance_data['import_times']['Step 1: Import FBX Files'] = time.time() - step_start
+
     # NEW STEP: Correct object names before grouping
     # This ensures objects with incorrect names are renamed to match expected convention
     # and that all objects from the same asset get the same base name
-    print(f"\n{'='*80}")
-    print(f"🔤 STEP 1.5: CORRECTING OBJECT NAMES")
-    print(f"{'='*80}")
+    
+    step_start = time.time()
     
     # Try to get fallback base name from FBX filenames (in case no objects are correctly named)
     fallback_base_name = None
@@ -246,55 +505,34 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     from .operations.name_corrector import correct_object_names
     correction_results = correct_object_names(import_results, fallback_base_name=fallback_base_name)
     
-    if correction_results['canonical_base_name']:
-        if correction_results['rename_stats']['renamed'] > 0:
-            print(f"\n✅ Name correction complete: {correction_results['rename_stats']['renamed']} object(s) renamed")
-            print(f"   📌 Canonical base name: '{correction_results['canonical_base_name']}'")
-        else:
-            print(f"\n✅ Name correction: All objects already have correct names")
-            print(f"   📌 Canonical base name: '{correction_results['canonical_base_name']}'")
-    else:
-        print(f"\n⚠️  Could not determine base name for correction - objects may be grouped incorrectly")
+    # Name correction summary prints removed to reduce console clutter
+    # Results are still available in correction_results dict if needed
+    
+    _performance_data['import_times']['Step 1.5: Correct Object Names'] = time.time() - step_start
     
     # Set IOI LOD properties on all imported objects (for IOI addon compatibility)
-    print(f"\n{'='*80}")
-    print(f"🏷️  STEP 1.6: SETTING IOI LOD PROPERTIES")
-    print(f"{'='*80}")
+    
+    step_start = time.time()
     all_imported_objects_list = []
     for fbx_file, imported_objects, _ in import_results:
         all_imported_objects_list.extend(imported_objects)
     set_ioi_lod_properties_for_objects(all_imported_objects_list)
+    _performance_data['import_times']['Step 1.6: Set IOI LOD Properties'] = time.time() - step_start
 
     # Track all imported objects for toolbar
     all_imported_objects_tracker.extend(all_imported_objects_list)
-    print(f"\n  📊 DEBUG: Tracked {len(all_imported_objects_list)} objects initially")
-    for obj in all_imported_objects_list[:10]:  # Show first 10
-        if obj.type == 'MESH':
-            print(f"    - {obj.name} (type: {obj.type})")
 
     # Group imported objects by base name (after correction)
     all_imported_objects = group_imported_objects(import_results)
     
-    print(f"\n✅ Import complete: {len(import_results)} FBX file(s) imported into {len(all_imported_objects)} asset group(s)")
-    
     # STEP 2: Process each asset group
-    print(f"\n{'='*80}")
-    print(f"⚙️  STEP 2: PROCESSING ASSET GROUPS")
-    print(f"{'='*80}")
-    
+    step_start = time.time()
     for base_name, import_groups in all_imported_objects.items():
-        print(f"\n{'─'*80}")
-        print(f"📦 Processing asset group: '{base_name}'")
-        print(f"{'─'*80}")
-        
         # Get proper name from JSON
         json_name, json_file = get_name_from_json(asset_dir)
         if json_name:
             # Remove trailing letter suffix pattern
             attach_root_base_name = re.sub(r'_[a-z]+$', '', json_name, flags=re.IGNORECASE)
-            print(f"  📋 Using JSON name for attach roots: {json_name}")
-            if attach_root_base_name != json_name:
-                print(f"  ✂️  Removed existing suffix: '{json_name}' → '{attach_root_base_name}'")
         else:
             attach_root_base_name = f"quixel_{base_name}"
         
@@ -329,14 +567,12 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                 rotation_euler = old_root.rotation_euler
                 if detected_rotation is None:
                     detected_rotation = rotation_euler.copy()
-                    print(f"  🔄 Detected rotation from old world root: X={math.degrees(rotation_euler.x):.1f}°, Y={math.degrees(rotation_euler.y):.1f}°, Z={math.degrees(rotation_euler.z):.1f}°")
                 
                 # Get the scale from the old world root
                 root_scale = old_root.scale
                 if abs(root_scale.x - 1.0) > 0.001 or abs(root_scale.y - 1.0) > 0.001 or abs(root_scale.z - 1.0) > 0.001:
                     # The root has a non-identity scale, we need to preserve this
                     old_root_scale = root_scale.copy()
-                    print(f"  📏 Detected scale from old world root: {root_scale}")
                 
                 break  # Use the first old world root's rotation and scale
             
@@ -351,7 +587,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                         x_rot_deg = math.degrees(rotation_euler.x)
                         if abs(x_rot_deg - 90) < 5 or abs(x_rot_deg - (-90)) < 5:
                             detected_rotation = rotation_euler.copy()
-                            print(f"  🔄 Detected rotation from mesh object: X={x_rot_deg:.1f}°, Y={math.degrees(rotation_euler.y):.1f}°, Z={math.degrees(rotation_euler.z):.1f}°")
                             break
             
             # Collect all children of old world roots and apply scale if needed
@@ -373,7 +608,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     child.parent = None
             
             # Remove old world root objects
-            print(f"    🗑️  DEBUG: Removing {len(old_world_roots)} world root object(s)")
             for old_root in old_world_roots:
                 print(f"      - Deleting: {old_root.name}")
                 bpy.data.objects.remove(old_root, do_unlink=True)
@@ -403,73 +637,64 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         # Use detected scale or default to 0.01 if not found
         if detected_scale is None:
             detected_scale = 0.01
-            print(f"  ⚠️ No scale detected, using default: {detected_scale}")
-        else:
-            print(f"  📏 Detected scale: {detected_scale}")
-        
+
         # Use detected rotation or default to (90, 0, 0) if not found (common FBX import rotation)
         if detected_rotation is None:
             detected_rotation = mathutils.Euler((math.radians(90), 0, 0), 'XYZ')
-            print(f"  ⚠️ No rotation detected, using default: X=90°")
-        else:
-            print(f"  🔄 Using rotation: X={math.degrees(detected_rotation.x):.1f}°, Y={math.degrees(detected_rotation.y):.1f}°, Z={math.degrees(detected_rotation.z):.1f}°")
         
         # CRITICAL: Set the detected rotation and scale on all objects BEFORE applying transforms
         # This ensures we apply the CORRECT transforms, not whatever random transforms the objects have
-        print(f"\n  {'─'*40}")
-        print(f"  🔧 STEP 3A: SETTING TRANSFORMS ON OBJECTS")
-        print(f"  {'─'*40}")
         for obj in all_objects_to_process:
             if obj.type == 'MESH' and obj.data:
                 # Set the detected rotation
                 obj.rotation_euler = detected_rotation.copy()
                 # Set the detected scale (uniform scale)
                 obj.scale = (detected_scale, detected_scale, detected_scale)
-                print(f"    ✅ Set transforms on '{obj.name}': rotation={detected_rotation}, scale={detected_scale}")
+                # Print removed to reduce console clutter
         
         # STEP 3B: Apply transforms (bake them into mesh geometry)
-        print(f"\n  {'─'*40}")
-        print(f"  🔧 STEP 3B: APPLYING TRANSFORMS (BAKING INTO MESH)")
-        print(f"  {'─'*40}")
         apply_transforms(all_objects_to_process)
         
         # STEP 4: Group by variation
-        print(f"\n  {'─'*40}")
-        print(f"  🔍 STEP 4: DETECTING VARIATIONS")
-        print(f"  {'─'*40}")
+        
+        step4_start = time.time()
         variations = organize_objects_by_variation(all_objects_to_process)
+        _performance_data['import_times']['Step 4: Detect Variations'] = time.time() - step4_start
         
         if not variations:
             print(f"  ⚠️ No mesh variations found in asset group")
             continue
         
         # STEP 5: Create materials
-        print(f"\n  {'─'*40}")
-        print(f"  🎨 STEP 5: CREATING MATERIALS (OPTIMIZED)")
-        print(f"  {'─'*40}")
+        
+        step5_start = time.time()
         create_materials_for_all_variations(
             asset_dir,
             attach_root_base_name,
             variations,
             import_groups,
-            context
+            context,
+            texture_resolution
         )
+        _performance_data['import_times']['Step 5: Create Materials'] = time.time() - step5_start
         
         # STEP 6: Create attach roots
-        print(f"\n  {'─'*40}")
-        print(f"  📦 STEP 6: CREATING ATTACH ROOTS")
-        print(f"  {'─'*40}")
+        
+        step6_start = time.time()
         attach_roots = create_asset_hierarchy(variations, attach_root_base_name, context)
+        _performance_data['import_times']['Step 6: Create Attach Roots'] = time.time() - step6_start
 
         # Track attach roots for cleanup
         if attach_roots:
             all_imported_objects_tracker.extend(attach_roots)
     
+    _performance_data['import_times']['Step 2: Process Asset Groups'] = time.time() - step_start
+    
     # STEP 7: Cleanup
-    print(f"\n  {'─'*40}")
-    print(f"  🧹 STEP 7: CLEANING UP")
-    print(f"  {'─'*40}")
+    
+    step7_start = time.time()
     cleanup_unused_materials(materials_before_import)
+    _performance_data['import_times']['Step 7: Cleanup'] = time.time() - step7_start
 
     # Force Blender to update
     bpy.context.view_layer.update()
@@ -486,91 +711,97 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         if json_name:
             asset_name = json_name
 
-    # Notify Electron immediately after import completes
-    # This ensures the import button won't get stuck if user cancels
-    write_import_complete(asset_dir, asset_name, thumbnail_path)
+    # Import complete - no notification needed (socket-based system)
 
     # Check if Glacier Setup is enabled
     if not glacier_setup:
         # Import directly without showing toolbar - assets are already in original scene
-        print(f"\n{'='*80}")
-        print(f"✅ IMPORT COMPLETE - GLACIER SETUP DISABLED")
-        print(f"{'='*80}")
-        print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
-        print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
-        print(f"  📡 Electron notified of successful import")
-        print(f"  ⚡ Asset imported directly to current scene (no preview scene)")
-        print(f"  🎬 Assets are in scene: {original_scene.name}")
+        print(f"✅ Import complete - {len(all_imported_objects_tracker)} objects imported")
+        
+        # Select and frame the imported objects
+        frame_imported_objects(all_imported_objects_tracker, context)
 
         return {'FINISHED'}
 
-    print(f"\n{'='*80}")
-    print(f"✅ IMPORT COMPLETE - SHOWING CONFIRMATION TOOLBAR")
-    print(f"{'='*80}")
-    print(f"  📦 Imported {len(all_imported_objects_tracker)} object(s)")
-    print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
-    print(f"  📡 Electron notified of successful import")
-    print(f"  ⏳ Waiting for user confirmation in preview scene...")
+    # Import completion prints removed to reduce console clutter
 
     # Detect LOD levels from ALL imported objects right before showing toolbar
     # This ensures we capture all LOD levels after all processing is complete
     # We need to clean the tracker list first to remove any objects that were deleted during processing
     from .operations.asset_processor import extract_lod_from_object_name
 
-    print(f"\n{'='*80}")
-    print(f"🔍 DEBUG: LOD DETECTION PROCESS")
-    print(f"{'='*80}")
-    print(f"  📊 Objects in tracker before cleanup: {len(all_imported_objects_tracker)}")
-
-    # Also show what's in the entire scene
-    all_scene_meshes = [obj for obj in bpy.data.objects if obj.type == 'MESH']
-    print(f"  🌍 Total mesh objects in entire scene: {len(all_scene_meshes)}")
-    print(f"  🔍 Sample mesh names in scene (first 15):")
-    for obj in all_scene_meshes[:15]:
-        print(f"    - {obj.name}")
-
     # Clean up all_imported_objects_tracker to remove deleted objects
     valid_objects = []
-    deleted_count = 0
     for obj in all_imported_objects_tracker:
         try:
             # Check if object still exists in bpy.data.objects
             if obj and obj.name in bpy.data.objects:
                 valid_objects.append(obj)
-            else:
-                deleted_count += 1
         except ReferenceError:
             # Object has been removed during processing, skip it
-            deleted_count += 1
             pass
-
-    print(f"  🗑️  Objects deleted during processing: {deleted_count}")
-    print(f"  ✅ Valid objects remaining: {len(valid_objects)}")
 
     # Update the tracker with only valid objects
     all_imported_objects_tracker.clear()
     all_imported_objects_tracker.extend(valid_objects)
 
     # Now detect LOD levels from valid objects
-    print(f"\n  🔍 Scanning valid objects for LOD levels:")
     lod_levels_set = set()
     for obj in all_imported_objects_tracker:
-        if obj.type == 'MESH' and obj.data:
+        try:
+            # Validate object reference before accessing properties
+            if obj is None:
+                continue
+            if obj.name not in bpy.data.objects:
+                continue
+            if bpy.data.objects[obj.name] != obj:
+                continue
+            if obj.type != 'MESH' or not obj.data:
+                continue
             lod_level = extract_lod_from_object_name(obj.name)
             lod_levels_set.add(lod_level)
-            print(f"    - {obj.name} → LOD{lod_level}")
+            # Print removed to reduce console clutter
+        except (ReferenceError, AttributeError, KeyError) as e:
+            # Object reference is invalid, skip it
+            continue
 
     lod_levels_tracker = sorted(list(lod_levels_set))
-    print(f"\n  📋 Complete LOD set collected: {lod_levels_set}")
-    print(f"  📋 Sorted LOD list: {lod_levels_tracker}")
+    # LOD detection prints removed to reduce console clutter
 
     if lod_levels_tracker:
-        print(f"  📊 Detected LOD levels for toolbar: {lod_levels_tracker}")
+        # Print removed to reduce console clutter
+        pass
     else:
         # Default to LOD0 if no LOD levels detected
         lod_levels_tracker = [0]
-        print(f"  ⚠️  No LOD levels detected, defaulting to: {lod_levels_tracker}")
+        # Print removed to reduce console clutter
 
+    # Skip framing in temp scene - it can cause crashes with invalid depsgraph
+    # The toolbar will handle showing the objects, and we'll frame after accepting
+    # frame_imported_objects(all_imported_objects_tracker, context)
+    
+    # Validate context one more time before showing toolbar to prevent crashes
+    try:
+        # Force refresh context to ensure it's valid
+        context = bpy.context
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print(f"❌ Context scene is invalid before showing toolbar")
+            # Switch back to original scene and cleanup
+            if temp_scene:
+                switch_to_scene(bpy.context, original_scene)
+                cleanup_preview_scene(temp_scene)
+            return {'CANCELLED'}
+    except Exception as e:
+        print(f"❌ Context validation failed before showing toolbar: {e}")
+        # Switch back to original scene and cleanup
+        try:
+            if temp_scene:
+                switch_to_scene(bpy.context, original_scene)
+                cleanup_preview_scene(temp_scene)
+        except:
+            pass
+        return {'CANCELLED'}
+    
     # Show import confirmation toolbar with scene references
     from .ui.import_modal import show_import_toolbar, get_active_toolbar
 
@@ -596,11 +827,12 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         def on_accept():
             """Handle accept - transfer assets to original scene and cleanup."""
             from .ui.import_modal import cleanup_toolbar
+            
+            # Start accept timing
+            _performance_data['accept_start_time'] = time.time()
 
-            print(f"\n{'='*80}")
-            print(f"✅ USER ACCEPTED IMPORT - TRANSFERRING ASSETS")
-            print(f"{'='*80}")
-
+            # Print removed to reduce console clutter
+        
             try:
                 # Transfer all assets from temp scene to original scene
                 transferred_objects = transfer_assets_to_original_scene(
@@ -615,13 +847,11 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
                 # Delete temporary preview scene
                 cleanup_preview_scene(temp_scene)
+                
+                # Frame the view to show transferred objects in original scene
+                frame_imported_objects(transferred_objects, bpy.context)
 
-                print(f"\n{'='*80}")
-                print(f"✅ IMPORT COMPLETE - ASSETS TRANSFERRED TO ORIGINAL SCENE")
-                print(f"{'='*80}")
-                print(f"  📦 Transferred {len(transferred_objects)} object(s)")
-                print(f"  🎨 Created {len(all_imported_materials_tracker)} material(s)")
-                print(f"  🎬 Returned to scene: {original_scene.name}")
+                # Print removed to reduce console clutter
 
             except Exception as e:
                 print(f"\n⚠️ Error during accept cleanup: {e}")
@@ -632,16 +862,20 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                 # ALWAYS clean up toolbar UI, even if cleanup failed
                 # This prevents the toolbar from getting stuck on screen
                 cleanup_toolbar()
+                
+                # Print performance breakdown
+                _print_performance_breakdown()
 
         # Define cancel callback - discard everything and return to original scene
         def on_cancel():
             """Handle cancel - discard all assets and return to original scene."""
             from .ui.import_modal import cleanup_toolbar
+            
+            # Start cancel timing
+            _performance_data['cancel_start_time'] = time.time()
 
-            print(f"\n{'='*80}")
             print(f"❌ USER CANCELLED IMPORT - DISCARDING ASSETS")
-            print(f"{'='*80}")
-
+        
             try:
                 # Switch back to original scene first
                 switch_to_scene(bpy.context, original_scene)
@@ -655,11 +889,7 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     materials_before_import
                 )
 
-                print(f"\n{'='*80}")
-                print(f"✅ IMPORT CANCELLED - ORIGINAL SCENE UNCHANGED")
-                print(f"{'='*80}")
-                print(f"  🎬 Returned to scene: {original_scene.name}")
-                print(f"  🧹 All imported assets discarded")
+                print(f"✅ Import cancelled - all assets discarded")
 
             except Exception as e:
                 print(f"\n⚠️ Error during cancel cleanup: {e}")
@@ -670,6 +900,9 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                 # ALWAYS clean up toolbar UI, even if cleanup failed
                 # This prevents the toolbar from getting stuck on screen
                 cleanup_toolbar()
+                
+                # Print performance breakdown
+                _print_performance_breakdown()
 
         # Set the callbacks on the toolbar
         toolbar.on_accept = on_accept

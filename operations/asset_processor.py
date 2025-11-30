@@ -44,24 +44,46 @@ def organize_objects_by_variation(objects):
         Detected indices: 0, 1, 2
         Output keys: 'a', 'b', 'c'
     """
+    import bpy
+    
     # First, group by numeric index
     index_groups = {}
     
-    print(f"\n  🔍 GROUPING {len(objects)} OBJECTS BY VARIATION:")
+    # Print removed to reduce console clutter
+    
+    # Get current scene to filter objects
+    current_scene = bpy.context.scene if hasattr(bpy.context, 'scene') else None
     
     for obj in objects:
-        # Only process mesh objects
-        if obj.type != 'MESH' or not obj.data:
-            print(f"    ⏭️  Skipping non-mesh object: {obj.name}")
+        try:
+            # Validate object reference
+            if obj is None:
+                continue
+            if obj.name not in bpy.data.objects:
+                continue
+            if bpy.data.objects[obj.name] != obj:
+                continue
+            
+            # Only process mesh objects
+            if obj.type != 'MESH' or not obj.data:
+                print(f"    ⏭️  Skipping non-mesh object: {obj.name}")
+                continue
+            
+            # Only process objects in the current scene (ignore leftovers from previous imports)
+            if current_scene and obj.name not in current_scene.objects:
+                print(f"    ⏭️  Skipping object not in current scene: {obj.name}")
+                continue
+            
+            # Detect the variation index (numeric)
+            variation_index = detect_variation_number(obj.name)
+            
+            if variation_index not in index_groups:
+                index_groups[variation_index] = []
+            
+            index_groups[variation_index].append(obj)
+        except (ReferenceError, AttributeError, KeyError):
+            # Object reference is invalid, skip it
             continue
-        
-        # Detect the variation index (numeric)
-        variation_index = detect_variation_number(obj.name)
-        
-        if variation_index not in index_groups:
-            index_groups[variation_index] = []
-        
-        index_groups[variation_index].append(obj)
     
     # Now convert indices to letter suffixes
     # Sort indices to ensure consistent ordering
@@ -69,18 +91,14 @@ def organize_objects_by_variation(objects):
     
     variations = {}
     
-    print(f"\n  🔤 CONVERTING INDICES TO LETTER SUFFIXES:")
+    # Print removed to reduce console clutter
     for variation_index in sorted_indices:
         # Convert index to letter suffix (0→a, 1→b, 25→z, 26→aa, etc.)
         letter_suffix = index_to_letter_suffix(variation_index)
         variations[letter_suffix] = index_groups[variation_index]
     
-    print(f"\n  📊 VARIATION SUMMARY:")
-    for suffix in sorted(variations.keys()):
-        mesh_names = [obj.name for obj in variations[suffix]]
-        print(f"    Variation '_{suffix}': {len(variations[suffix])} meshes")
-        for name in mesh_names:
-            print(f"      - {name}")
+    # Variation summary prints removed to reduce console clutter
+    # Variations dict is still returned with all the data
     
     return variations
 
@@ -128,6 +146,71 @@ def extract_lod_from_object_name(obj_name):
 
     # No LOD found, default to 0
     return 0
+
+
+def process_object_single_pass(obj, detected_rotation, detected_scale):
+    """Process a single object - extract ALL metadata and apply transforms in ONE pass.
+
+    This function does EVERYTHING needed for an object during import:
+    - Extract LOD level from name
+    - Extract variation suffix from name
+    - Store metadata as custom properties
+    - Set IOI properties
+    - Set rotation and scale
+    - Apply transforms
+
+    Args:
+        obj: Blender object to process
+        detected_rotation: Euler rotation to apply
+        detected_scale: Float scale to apply
+
+    Returns:
+        dict: Processed object data with metadata
+        {
+            'object': obj,
+            'lod_level': int,
+            'variation_index': int,
+            'is_mesh': bool
+        }
+    """
+    import mathutils
+    from ..utils.naming import detect_variation_number
+
+    # Initialize result
+    result = {
+        'object': obj,
+        'lod_level': 0,
+        'variation_index': 0,
+        'is_mesh': False
+    }
+
+    # Only process mesh objects
+    if obj.type != 'MESH' or not obj.data:
+        return result
+
+    result['is_mesh'] = True
+
+    # Extract LOD level from name ONCE
+    lod_level = extract_lod_from_object_name(obj.name)
+    result['lod_level'] = lod_level
+
+    # Extract variation index ONCE
+    variation_index = detect_variation_number(obj.name)
+    result['variation_index'] = variation_index
+
+    # Store metadata as custom properties for instant access later
+    obj["lod_level"] = lod_level
+    obj["variation_index"] = variation_index
+    obj["is_quixel_import"] = True
+
+    # Set IOI LOD properties
+    set_ioi_lod_properties(obj, lod_level)
+
+    # Set rotation and scale
+    obj.rotation_euler = detected_rotation.copy()
+    obj.scale = (detected_scale, detected_scale, detected_scale)
+
+    return result
 
 
 def set_ioi_lod_properties(obj, lod_level=None):
@@ -212,9 +295,7 @@ def set_ioi_lod_properties_for_objects(objects):
     Args:
         objects: List of Blender objects to process
     """
-    print(f"\n  {'─'*40}")
-    print(f"  🏷️  SETTING IOI LOD PROPERTIES")
-    print(f"  {'─'*40}")
+    # Header and detail prints removed to reduce console clutter
     
     processed_count = 0
     renamed_count = 0
@@ -228,15 +309,12 @@ def set_ioi_lod_properties_for_objects(objects):
             
             if old_name and new_name:
                 renamed_count += 1
-                # Extract LOD level for logging
-                lod_level = extract_lod_from_object_name(old_name)
-                print(f"    ✅ Set LOD properties and renamed '{old_name}' → '{new_name}' (LOD{lod_level})")
+                # Print removed to reduce console clutter
             else:
-                # Extract LOD level for logging
-                lod_level = extract_lod_from_object_name(obj.name)
-                print(f"    ✅ Set LOD properties on '{obj.name}' (LOD{lod_level}, name already correct)")
+                # Print removed to reduce console clutter
+                pass
     
-    print(f"    📊 Processed {processed_count} object(s), renamed {renamed_count} object(s)")
+    # Summary print removed to reduce console clutter
 
 
 def calculate_variation_bbox(mesh_objects):
@@ -278,10 +356,7 @@ def calculate_variation_bbox(mesh_objects):
     height = max_y - min_y
     depth = max_z - min_z
     
-    print(f"    📏 BOUNDING BOX: width={width:.2f}, height={height:.2f}, depth={depth:.2f}")
-    print(f"       X: [{min_x:.2f}, {max_x:.2f}]")
-    print(f"       Y: [{min_y:.2f}, {max_y:.2f}]")
-    print(f"       Z: [{min_z:.2f}, {max_z:.2f}]")
+    # Bounding box prints removed to reduce console clutter
     
     return {
         'min_x': min_x,
@@ -303,21 +378,17 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
     Returns:
         list: List of created attach root objects
     """
-    print(f"\n  {'─'*40}")
-    print(f"  📦 STEP 6A: CALCULATING BOUNDING BOXES")
-    print(f"  {'─'*40}")
+    # Separator prints removed to reduce console clutter
     
     # Calculate bounding boxes for all variations BEFORE parenting
     variation_bboxes = {}
     for variation_suffix in sorted(variations.keys()):
         variation_objects = variations[variation_suffix]
-        print(f"\n    📏 Calculating bbox for variation '_{variation_suffix}':")
+        # Print removed to reduce console clutter
         bbox = calculate_variation_bbox(variation_objects)
         variation_bboxes[variation_suffix] = bbox
     
-    print(f"\n  {'─'*40}")
-    print(f"  📦 STEP 6B: CREATING ATTACH ROOTS WITH PROPER SPACING")
-    print(f"  {'─'*40}")
+    # Separator prints removed to reduce console clutter
     
     current_y_offset = 0.0
     created_attach_roots = []
@@ -327,7 +398,7 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
         variation_objects = variations[variation_suffix]
         bbox = variation_bboxes[variation_suffix]
         
-        print(f"\n  📌 Creating attach root for variation '_{variation_suffix}':")
+        # Print removed to reduce console clutter
         
         # Create attach root name with variation suffix
         attach_root_name = f"{attach_root_base_name}_{variation_suffix}"
@@ -350,12 +421,40 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
         attach_root["ioiAttachRootNode"] = bool(True)
         attach_root["IoiG2ObjectType"] = str("static")
         attach_root["IoiGizmoSize"] = attach_root.empty_display_size * 100
-        
+
+        # OPTIMIZED: Organize children by LOD level and store on attach root
+        # This enables instant LOD switching without looping through all objects
+        objects_by_lod = {}
+        lod_levels_set = set()
+
+        for obj in variation_objects:
+            if obj.type == 'MESH' and obj.data:
+                # Extract LOD level from name AND store as custom property
+                lod_level = extract_lod_from_object_name(obj.name)
+
+                # Store as custom property for fast access later
+                obj["lod_level"] = lod_level
+                obj["is_quixel_import"] = True
+
+                lod_levels_set.add(lod_level)
+
+                if lod_level not in objects_by_lod:
+                    objects_by_lod[lod_level] = []
+                objects_by_lod[lod_level].append(obj.name)  # Store name, not reference
+
+        # Store LOD organization on attach root as JSON-serializable data
+        attach_root["lod_levels"] = sorted(list(lod_levels_set))
+        attach_root["variation_suffix"] = variation_suffix
+
+        # Store object names organized by LOD (can't store object references in custom properties)
+        for lod_level, obj_names in objects_by_lod.items():
+            attach_root[f"lod_{lod_level}_objects"] = ",".join(obj_names)
+
         context.collection.objects.link(attach_root)
         created_attach_roots.append(attach_root)
-        
-        print(f"    📦 Created: {attach_root_name} at world position (0, {current_y_offset}, 0)")
-        
+
+        # Prints removed to reduce console clutter
+
         # Parent all variation objects to attach root
         # Objects keep their original world positions - Blender automatically calculates local positions
         # We don't modify object locations - they stay exactly where they are in world space
@@ -363,17 +462,17 @@ def create_asset_hierarchy(variations, attach_root_base_name, context):
             if obj.type == 'MESH' and obj.data:
                 # Store the object's current world position (for logging)
                 world_pos = obj.location.copy()
-                
+
                 # Parent to attach root
                 # Blender automatically converts world position to local position
                 # The object's world position remains unchanged
                 obj.parent = attach_root
-                
+
                 # After parenting, obj.location is now in LOCAL space relative to attach_root
                 # We don't modify it - Blender already calculated it correctly to preserve world position
-                print(f"      📍 Object '{obj.name}' at local position ({obj.location.x:.2f}, {obj.location.y:.2f}, {obj.location.z:.2f}) relative to attach root (world: {world_pos.x:.2f}, {world_pos.y:.2f}, {world_pos.z:.2f})")
-        
-        print(f"    ✅ Parented {len(variation_objects)} object(s) to attach root")
+                # Print removed to reduce console clutter
+
+        # Print removed to reduce console clutter
         
         # Update Y offset for next variation
         current_y_offset += bbox['height'] + margin
@@ -391,7 +490,7 @@ def cleanup_unused_materials(materials_before_import, imported_objects=None):
         materials_before_import: Set of material names that existed before import
         imported_objects: Optional list of objects that were imported (for more aggressive cleanup)
     """
-    print(f"\n  🧹 CLEANING UP TEMPORARY MATERIALS:")
+    # Header print removed to reduce console clutter
 
     # Pattern to match temporary materials created by FBX importer
     temp_material_patterns = [
@@ -426,21 +525,19 @@ def cleanup_unused_materials(materials_before_import, imported_objects=None):
         try:
             if mat.users == 0:
                 bpy.data.materials.remove(mat, do_unlink=True)
-                print(f"    🗑️  Removed unused temporary material: {mat_name}")
+                # Print removed to reduce console clutter
                 removed_count += 1
             else:
                 # Material is in use - try to unlink and remove anyway
-                print(f"    🗑️  Force removing temporary material (has {mat.users} users): {mat_name}")
+                # Print removed to reduce console clutter
                 mat.user_clear()
                 bpy.data.materials.remove(mat, do_unlink=True)
                 removed_count += 1
         except Exception as e:
-            print(f"    ⚠️  Failed to remove material '{mat_name}': {e}")
+            # Print removed to reduce console clutter
+            pass
 
-    if removed_count > 0:
-        print(f"    ✅ Cleaned up {removed_count} temporary material(s)")
-    else:
-        print(f"    ℹ️  No temporary materials found to clean up")
+    # Cleanup summary prints removed to reduce console clutter
 
 
 def process_asset_directory(asset_dir):

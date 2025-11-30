@@ -27,6 +27,22 @@ class DrawConstants:
     filled_circle_shader = None
     filled_circle_batch = None
     uniform_shader = None
+    
+    # Anti-aliased circle shader and quad batch
+    anti_aliased_circle_shader = None
+    circle_quad_batch = None
+    
+    # Anti-aliased circle outline shader
+    anti_aliased_circle_outline_shader = None
+    
+    # Anti-aliased quarter-circle arc shader for borders
+    anti_aliased_arc_shader = None
+    
+    # Anti-aliased rectangle shader
+    anti_aliased_rect_shader = None
+    
+    # Anti-aliased border shader
+    anti_aliased_border_shader = None
 
     # Cached batches for rounded rectangles
     rect_batch_h = None
@@ -94,6 +110,25 @@ class DrawConstants:
             cls.chevron_batch = batch_for_shader(
                 cls.uniform_shader, 'LINES', {"pos": vertices}
             )
+            
+            # Create anti-aliased circle shader
+            cls._create_anti_aliased_circle_shader()
+            
+            # Create anti-aliased circle outline shader
+            cls._create_anti_aliased_circle_outline_shader()
+            
+            # Create anti-aliased quarter-circle arc shader for borders
+            cls._create_anti_aliased_arc_shader()
+            
+            # Create anti-aliased rectangle shader
+            cls._create_anti_aliased_rect_shader()
+            
+            # Create unit quad batch for anti-aliased circles (will be scaled/translated)
+            quad_vertices = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            quad_indices = [(0, 1, 2), (0, 2, 3)]
+            cls.circle_quad_batch = batch_for_shader(
+                cls.anti_aliased_circle_shader, 'TRIS', {"pos": quad_vertices}, indices=quad_indices
+            )
 
     @classmethod
     def get_arc_batch(cls, radius, segments=32):
@@ -112,6 +147,347 @@ class DrawConstants:
                 cls.uniform_shader, 'LINE_STRIP', {"pos": vertices}
             )
         return cls.arc_batches[key]
+    
+    @classmethod
+    def _create_anti_aliased_circle_shader(cls):
+        """Create a custom shader for anti-aliased circle rendering.
+        
+        Uses distance-based alpha falloff with smoothstep for smooth edges.
+        Uses screen-space coordinates with proper viewport handling.
+        """
+        vertex_shader = '''
+        in vec2 pos;
+        uniform vec2 center;
+        uniform vec2 viewportSize;
+        uniform float scale;
+        
+        out vec2 screenPos;
+        
+        void main() {
+            // Transform unit quad (0,0 to 1,1) to screen space
+            // Center the quad at origin, then scale and translate
+            vec2 local = (pos - vec2(0.5, 0.5)) * scale;
+            vec2 screen = center + local;
+            screenPos = screen;
+            
+            // Convert screen coordinates to NDC (-1 to 1 range)
+            // Blender's screen space: (0,0) at bottom-left
+            vec2 ndc = vec2(
+                (screen.x / viewportSize.x) * 2.0 - 1.0,
+                (screen.y / viewportSize.y) * 2.0 - 1.0
+            );
+            
+            gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        }
+        '''
+        
+        fragment_shader = '''
+        uniform vec4 color;
+        uniform vec2 center;
+        uniform float radius;
+        uniform float edgeSoftness;
+        
+        in vec2 screenPos;
+        out vec4 fragColor;
+        
+        void main() {
+            // Calculate distance from center in screen space (pixels)
+            float dist = distance(screenPos, center);
+            
+            // Use smoothstep for soft edge anti-aliasing
+            // The fade goes from (radius - edgeSoftness) to (radius + edgeSoftness)
+            // We adjust the radius in the calling code so outer edge aligns with rectangle
+            float alpha = 1.0 - smoothstep(radius - edgeSoftness, radius + edgeSoftness, dist);
+            
+            // Apply gamma correction to match Blender's built-in shader color handling
+            // Colors appear brighter without this, suggesting they need to be in linear space
+            // Convert sRGB input to linear for correct display
+            vec3 linearColor = mix(
+                color.rgb / 12.92,
+                pow((color.rgb + 0.055) / 1.055, vec3(2.4)),
+                step(0.04045, color.rgb)
+            );
+            
+            fragColor = vec4(linearColor, color.a * alpha);
+        }
+        '''
+        
+        try:
+            cls.anti_aliased_circle_shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+        except Exception as e:
+            # Fallback: if shader creation fails, we'll use the old method
+            print(f"Warning: Failed to create anti-aliased circle shader: {e}")
+            cls.anti_aliased_circle_shader = None
+    
+    @classmethod
+    def _create_anti_aliased_circle_outline_shader(cls):
+        """Create a custom shader for anti-aliased circle outline rendering.
+        
+        Uses distance-based alpha falloff to create smooth outline edges.
+        Uses screen-space coordinates with proper viewport handling.
+        """
+        vertex_shader = '''
+        in vec2 pos;
+        uniform vec2 center;
+        uniform vec2 viewportSize;
+        uniform float scale;
+        
+        out vec2 screenPos;
+        
+        void main() {
+            // Transform unit quad (0,0 to 1,1) to screen space
+            // Center the quad at origin, then scale and translate
+            vec2 local = (pos - vec2(0.5, 0.5)) * scale;
+            vec2 screen = center + local;
+            screenPos = screen;
+            
+            // Convert screen coordinates to NDC (-1 to 1 range)
+            vec2 ndc = vec2(
+                (screen.x / viewportSize.x) * 2.0 - 1.0,
+                (screen.y / viewportSize.y) * 2.0 - 1.0
+            );
+            
+            gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        }
+        '''
+        
+        fragment_shader = '''
+        uniform vec4 color;
+        uniform vec2 center;
+        uniform float radius;
+        uniform float thickness;
+        uniform float edgeSoftness;
+        
+        in vec2 screenPos;
+        out vec4 fragColor;
+        
+        void main() {
+            // Calculate distance from center in screen space (pixels)
+            float dist = distance(screenPos, center);
+            
+            // Create a ring shape: inside radius - thickness/2, outside radius + thickness/2
+            float innerRadius = radius - thickness * 0.5;
+            float outerRadius = radius + thickness * 0.5;
+            
+            // Use smoothstep for soft edge anti-aliasing on both inner and outer edges
+            float innerAlpha = smoothstep(innerRadius - edgeSoftness, innerRadius + edgeSoftness, dist);
+            float outerAlpha = 1.0 - smoothstep(outerRadius - edgeSoftness, outerRadius + edgeSoftness, dist);
+            
+            // Combine both edges (ring shape)
+            float alpha = innerAlpha * outerAlpha;
+            
+            // Apply gamma correction to match Blender's built-in shader color handling
+            // Colors appear brighter without this, suggesting they need to be in linear space
+            // Convert sRGB input to linear for correct display
+            vec3 linearColor = mix(
+                color.rgb / 12.92,
+                pow((color.rgb + 0.055) / 1.055, vec3(2.4)),
+                step(0.04045, color.rgb)
+            );
+            
+            fragColor = vec4(linearColor, color.a * alpha);
+        }
+        '''
+        
+        try:
+            cls.anti_aliased_circle_outline_shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+        except Exception as e:
+            # Fallback: if shader creation fails, we'll use the old method
+            print(f"Warning: Failed to create anti-aliased circle outline shader: {e}")
+            cls.anti_aliased_circle_outline_shader = None
+    
+    @classmethod
+    def _create_anti_aliased_arc_shader(cls):
+        """Create a custom shader for anti-aliased quarter-circle arc rendering.
+        
+        Uses distance-based alpha falloff to create smooth arc edges.
+        Only draws pixels within the specified angle range.
+        """
+        vertex_shader = '''
+        in vec2 pos;
+        uniform vec2 center;
+        uniform vec2 viewportSize;
+        uniform float scale;
+        
+        out vec2 screenPos;
+        
+        void main() {
+            // Transform unit quad (0,0 to 1,1) to screen space
+            vec2 local = (pos - vec2(0.5, 0.5)) * scale;
+            vec2 screen = center + local;
+            screenPos = screen;
+            
+            // Convert screen coordinates to NDC (-1 to 1 range)
+            vec2 ndc = vec2(
+                (screen.x / viewportSize.x) * 2.0 - 1.0,
+                (screen.y / viewportSize.y) * 2.0 - 1.0
+            );
+            
+            gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        }
+        '''
+        
+        fragment_shader = '''
+        uniform vec4 color;
+        uniform vec2 center;
+        uniform float radius;
+        uniform float thickness;
+        uniform float edgeSoftness;
+        uniform float startAngle;
+        uniform float endAngle;
+        
+        in vec2 screenPos;
+        out vec4 fragColor;
+        
+        // Convert sRGB to linear color space
+        vec3 srgb_to_linear(vec3 srgb) {
+            return mix(
+                srgb / 12.92,
+                pow((srgb + 0.055) / 1.055, vec3(2.4)),
+                step(0.04045, srgb)
+            );
+        }
+        
+        void main() {
+            // Calculate distance from center
+            vec2 offset = screenPos - center;
+            float dist = length(offset);
+            
+            // Calculate angle from center
+            float angle = atan(offset.y, offset.x);
+            // Normalize angle to [0, 2π]
+            if (angle < 0.0) {
+                angle += 6.28318530718; // 2 * PI
+            }
+            
+            // Normalize start and end angles to [0, 2π]
+            float start = startAngle;
+            float end = endAngle;
+            if (start < 0.0) start += 6.28318530718;
+            if (end < 0.0) end += 6.28318530718;
+            
+            // Check if angle is within range
+            bool inAngleRange = false;
+            if (end > start) {
+                inAngleRange = (angle >= start && angle <= end);
+            } else {
+                // Handle wrap-around case
+                inAngleRange = (angle >= start || angle <= end);
+            }
+            
+            if (!inAngleRange) {
+                fragColor = vec4(0.0, 0.0, 0.0, 0.0);
+                return;
+            }
+            
+            // Create a ring shape: inside radius - thickness/2, outside radius + thickness/2
+            float innerRadius = radius - thickness * 0.5;
+            float outerRadius = radius + thickness * 0.5;
+            
+            // Use smoothstep for soft edge anti-aliasing on both inner and outer edges
+            float innerAlpha = smoothstep(innerRadius - edgeSoftness, innerRadius + edgeSoftness, dist);
+            float outerAlpha = 1.0 - smoothstep(outerRadius - edgeSoftness, outerRadius + edgeSoftness, dist);
+            
+            // Combine both edges (ring shape)
+            float alpha = innerAlpha * outerAlpha;
+            
+            // Apply sRGB to linear conversion
+            vec3 linearColor = srgb_to_linear(color.rgb);
+            
+            fragColor = vec4(linearColor, color.a * alpha);
+        }
+        '''
+        
+        try:
+            cls.anti_aliased_arc_shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+        except Exception as e:
+            # Fallback: if shader creation fails, we'll use the old method
+            print(f"Warning: Failed to create anti-aliased arc shader: {e}")
+            cls.anti_aliased_arc_shader = None
+    
+    @classmethod
+    def _create_anti_aliased_rect_shader(cls):
+        """Create a custom shader for anti-aliased rectangle rendering.
+        
+        Uses distance-based alpha falloff on all edges for smooth anti-aliasing.
+        Uses screen-space coordinates with proper viewport handling.
+        """
+        vertex_shader = '''
+        in vec2 pos;
+        uniform vec2 rectPos;
+        uniform vec2 rectSize;
+        uniform vec2 viewportSize;
+        
+        out vec2 screenPos;
+        
+        void main() {
+            // Transform unit quad (0,0 to 1,1) to screen space
+            vec2 screen = rectPos + pos * rectSize;
+            screenPos = screen;
+            
+            // Convert screen coordinates to NDC (-1 to 1 range)
+            vec2 ndc = vec2(
+                (screen.x / viewportSize.x) * 2.0 - 1.0,
+                (screen.y / viewportSize.y) * 2.0 - 1.0
+            );
+            
+            gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        }
+        '''
+        
+        fragment_shader = '''
+        uniform vec4 color;
+        uniform vec2 rectPos;
+        uniform vec2 rectSize;
+        uniform float edgeSoftness;
+        
+        in vec2 screenPos;
+        out vec4 fragColor;
+        
+        void main() {
+            // Calculate distance to each edge (all should be positive inside the rectangle)
+            float distLeft = screenPos.x - rectPos.x;
+            float distRight = (rectPos.x + rectSize.x) - screenPos.x;
+            float distBottom = screenPos.y - rectPos.y;
+            float distTop = (rectPos.y + rectSize.y) - screenPos.y;
+            
+            // Find minimum distance to any edge (this is the distance to the nearest edge)
+            float minDist = min(min(distLeft, distRight), min(distBottom, distTop));
+            
+            // Use smoothstep for soft edge anti-aliasing
+            // Rectangle is opaque inside, fades smoothly at the very edges
+            // edgeSoftness controls the transition width (typically 1.0-2.0 pixels)
+            // When minDist >= edgeSoftness (inside): alpha = 1.0 (fully opaque)
+            // When 0 < minDist < edgeSoftness (near edge): alpha fades smoothly
+            // When minDist <= 0 (outside): alpha = 0.0 (transparent)
+            float alpha = 1.0;
+            if (minDist < edgeSoftness) {
+                // Fade at edges for anti-aliasing
+                alpha = smoothstep(0.0, edgeSoftness, minDist);
+            }
+            
+            // Apply gamma correction to match Blender's built-in shader color handling
+            // Convert sRGB input to linear for correct display
+            vec3 linearColor = mix(
+                color.rgb / 12.92,
+                pow((color.rgb + 0.055) / 1.055, vec3(2.4)),
+                step(0.04045, color.rgb)
+            );
+            
+            fragColor = vec4(linearColor, color.a * alpha);
+        }
+        '''
+        
+        try:
+            cls.anti_aliased_rect_shader = gpu.types.GPUShader(vertex_shader, fragment_shader)
+            # Debug: verify shader was created
+            # print("Anti-aliased rectangle shader created successfully")
+        except Exception as e:
+            # Fallback: if shader creation fails, we'll use the old method
+            print(f"Warning: Failed to create anti-aliased rectangle shader: {e}")
+            import traceback
+            traceback.print_exc()
+            cls.anti_aliased_rect_shader = None
 
 
 def draw_rounded_rect(x, y, width, height, radius, color, segments=16):
@@ -129,23 +505,9 @@ def draw_rounded_rect(x, y, width, height, radius, color, segments=16):
 
     gpu.state.blend_set('ALPHA')
 
-    shader = DrawConstants.uniform_shader
-    shader.bind()
-    shader.uniform_float("color", color)
-
-    # Draw horizontal strip using cached batch and matrix transforms
-    with gpu.matrix.push_pop():
-        gpu.matrix.translate((x + radius, y))
-        gpu.matrix.scale((width - 2 * radius, height))
-        DrawConstants.rect_batch_h.draw(shader)
-
-    # Draw vertical strip using cached batch and matrix transforms
-    with gpu.matrix.push_pop():
-        gpu.matrix.translate((x, y + radius))
-        gpu.matrix.scale((width, height - 2 * radius))
-        DrawConstants.rect_batch_v.draw(shader)
-
-    # Draw smooth filled circles at corners using pre-computed batch
+    # Draw corners FIRST, then rectangles on top
+    # This ensures corners blend correctly with the background for anti-aliasing,
+    # and rectangles cover inner edges to maintain color consistency
     corners = [
         (x + radius, y + radius),              # Bottom-left
         (x + width - radius, y + radius),      # Bottom-right
@@ -153,11 +515,98 @@ def draw_rounded_rect(x, y, width, height, radius, color, segments=16):
         (x + radius, y + height - radius),     # Top-left
     ]
 
-    for cx, cy in corners:
+    # Draw anti-aliased circles at corners for smooth edges
+    # The rectangles drawn on top will cover the inner parts, ensuring color match
+    if DrawConstants.anti_aliased_circle_shader is not None:
+        aa_shader = DrawConstants.anti_aliased_circle_shader
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Calculate scale to cover the circle area (with some padding for edge softness)
+        scale_size = (radius + 1.0) * 2.0
+        
+        # Ensure color is a proper tuple with 4 components (RGBA)
+        if len(color) == 3:
+            color_rgba = (color[0], color[1], color[2], 1.0)
+        else:
+            color_rgba = color
+        
+        for cx, cy in corners:
+            # Bind shader and set uniforms for each corner
+            aa_shader.bind()
+            aa_shader.uniform_float("center", (cx, cy))
+            aa_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+            # Adjust radius so the anti-aliased outer edge aligns perfectly with rectangle boundary
+            # The anti-aliasing extends from (radius - edgeSoftness) to (radius + edgeSoftness)
+            # To align outer edge at exact radius, we reduce the shader radius by edgeSoftness
+            edge_softness = 1.0
+            effective_radius = radius - edge_softness  # Outer edge will be at radius
+            aa_shader.uniform_float("radius", effective_radius)
+            aa_shader.uniform_float("color", color_rgba)  # Use the exact same color as the rectangles
+            aa_shader.uniform_float("edgeSoftness", edge_softness)  # 1-pixel soft edge for smooth anti-aliasing
+            aa_shader.uniform_float("scale", scale_size)
+            
+            DrawConstants.circle_quad_batch.draw(aa_shader)
+    else:
+        # Fallback to regular circles if anti-aliased shader not available
+        shader = DrawConstants.uniform_shader
+        shader.bind()
+        shader.uniform_float("color", color)
+        for cx, cy in corners:
+            with gpu.matrix.push_pop():
+                gpu.matrix.translate((cx, cy))
+                gpu.matrix.scale_uniform(radius)
+                DrawConstants.filled_circle_batch.draw(shader)
+
+    # Now draw the rectangular parts on top of the corners with anti-aliasing
+    # Get viewport size for coordinate conversion
+    viewport = gpu.state.viewport_get()
+    viewport_width = viewport[2] if len(viewport) > 2 else 1920
+    viewport_height = viewport[3] if len(viewport) > 3 else 1080
+    
+    # Ensure color is a proper tuple with 4 components (RGBA)
+    if len(color) == 3:
+        color_rgba = (color[0], color[1], color[2], 1.0)
+    else:
+        color_rgba = color
+    
+    # Use anti-aliased rectangle shader if available
+    if DrawConstants.anti_aliased_rect_shader is not None:
+        aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+        aa_rect_shader.bind()
+        aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+        aa_rect_shader.uniform_float("color", color_rgba)
+        aa_rect_shader.uniform_float("edgeSoftness", 1.0)  # 1-pixel soft edge for smooth anti-aliasing
+        
+        # Draw horizontal strip with anti-aliasing
+        aa_rect_shader.uniform_float("rectPos", (x + radius, y))
+        aa_rect_shader.uniform_float("rectSize", (width - 2 * radius, height))
+        DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+        
+        # Draw vertical strip with anti-aliasing
+        aa_rect_shader.uniform_float("rectPos", (x, y + radius))
+        aa_rect_shader.uniform_float("rectSize", (width, height - 2 * radius))
+        DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+    else:
+        # Fallback to regular rectangles
+        shader = DrawConstants.uniform_shader
+        shader.bind()
+        shader.uniform_float("color", color)
+        
+        # Draw horizontal strip using cached batch and matrix transforms
         with gpu.matrix.push_pop():
-            gpu.matrix.translate((cx, cy))
-            gpu.matrix.scale_uniform(radius)
-            DrawConstants.filled_circle_batch.draw(shader)
+            gpu.matrix.translate((x + radius, y))
+            gpu.matrix.scale((width - 2 * radius, height))
+            DrawConstants.rect_batch_h.draw(shader)
+        
+        # Draw vertical strip using cached batch and matrix transforms
+        with gpu.matrix.push_pop():
+            gpu.matrix.translate((x, y + radius))
+            gpu.matrix.scale((width, height - 2 * radius))
+            DrawConstants.rect_batch_v.draw(shader)
 
     gpu.state.blend_set('NONE')
 
@@ -410,71 +859,135 @@ class BL_UI_Dropdown(BL_UI_Widget):
         gpu.state.blend_set('ALPHA')
 
         radius = 4
-        shader = DrawConstants.uniform_shader
-        shader.bind()
-        shader.uniform_float("color", color)
-
-        # Draw main horizontal strip using cached batch
-        h_left = x if not bottom_left and not top_left else x + radius
-        h_right = x + width if not bottom_right and not top_right else x + width - radius
-        h_width = h_right - h_left
-
-        with gpu.matrix.push_pop():
-            gpu.matrix.translate((h_left, y))
-            gpu.matrix.scale((h_width, height))
-            DrawConstants.rect_batch_h.draw(shader)
-
-        # Draw left vertical strip if needed
-        if bottom_left or top_left:
-            bl_y = (y + radius) if bottom_left else y
-            tl_y = (y + height - radius) if top_left else (y + height)
-            v_height = tl_y - bl_y
-
-            with gpu.matrix.push_pop():
-                gpu.matrix.translate((x, bl_y))
-                gpu.matrix.scale((radius, v_height))
-                DrawConstants.rect_batch_v.draw(shader)
-
-        # Draw right vertical strip if needed
-        if bottom_right or top_right:
-            br_y = (y + radius) if bottom_right else y
-            tr_y = (y + height - radius) if top_right else (y + height)
-            v_height = tr_y - br_y
-
-            with gpu.matrix.push_pop():
-                gpu.matrix.translate((x + width - radius, br_y))
-                gpu.matrix.scale((radius, v_height))
-                DrawConstants.rect_batch_v.draw(shader)
-
-        # Draw smooth circles at rounded corners only
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Ensure color is a proper tuple with 4 components (RGBA)
+        if len(color) == 3:
+            color_rgba = (color[0], color[1], color[2], 1.0)
+        else:
+            color_rgba = color
+        
+        # Draw corners FIRST with anti-aliasing
+        corners_to_draw = []
         if bottom_left:
-            with gpu.matrix.push_pop():
-                gpu.matrix.translate((x + radius, y + radius))
-                gpu.matrix.scale_uniform(radius)
-                DrawConstants.filled_circle_batch.draw(shader)
-
+            corners_to_draw.append((x + radius, y + radius))
         if bottom_right:
-            with gpu.matrix.push_pop():
-                gpu.matrix.translate((x + width - radius, y + radius))
-                gpu.matrix.scale_uniform(radius)
-                DrawConstants.filled_circle_batch.draw(shader)
-
+            corners_to_draw.append((x + width - radius, y + radius))
         if top_right:
-            with gpu.matrix.push_pop():
-                gpu.matrix.translate((x + width - radius, y + height - radius))
-                gpu.matrix.scale_uniform(radius)
-                DrawConstants.filled_circle_batch.draw(shader)
-
+            corners_to_draw.append((x + width - radius, y + height - radius))
         if top_left:
+            corners_to_draw.append((x + radius, y + height - radius))
+        
+        # Draw anti-aliased circles at corners
+        if DrawConstants.anti_aliased_circle_shader is not None and corners_to_draw:
+            aa_shader = DrawConstants.anti_aliased_circle_shader
+            scale_size = (radius + 1.0) * 2.0
+            
+            for cx, cy in corners_to_draw:
+                aa_shader.bind()
+                aa_shader.uniform_float("center", (cx, cy))
+                aa_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+                # Adjust radius so the anti-aliased outer edge aligns perfectly
+                edge_softness = 1.0
+                effective_radius = radius - edge_softness  # Outer edge will be at radius
+                aa_shader.uniform_float("radius", effective_radius)
+                aa_shader.uniform_float("color", color_rgba)
+                aa_shader.uniform_float("edgeSoftness", edge_softness)
+                aa_shader.uniform_float("scale", scale_size)
+                DrawConstants.circle_quad_batch.draw(aa_shader)
+        else:
+            # Fallback to regular circles
+            shader = DrawConstants.uniform_shader
+            shader.bind()
+            shader.uniform_float("color", color)
+            for cx, cy in corners_to_draw:
+                with gpu.matrix.push_pop():
+                    gpu.matrix.translate((cx, cy))
+                    gpu.matrix.scale_uniform(radius)
+                    DrawConstants.filled_circle_batch.draw(shader)
+        
+        # Draw rectangular parts with anti-aliasing
+        if DrawConstants.anti_aliased_rect_shader is not None:
+            aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+            aa_rect_shader.bind()
+            aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+            aa_rect_shader.uniform_float("color", color_rgba)
+            aa_rect_shader.uniform_float("edgeSoftness", 1.0)
+            
+            # Draw main horizontal strip
+            h_left = x if not bottom_left and not top_left else x + radius
+            h_right = x + width if not bottom_right and not top_right else x + width - radius
+            h_width = h_right - h_left
+            if h_width > 0:
+                aa_rect_shader.uniform_float("rectPos", (h_left, y))
+                aa_rect_shader.uniform_float("rectSize", (h_width, height))
+                DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw left vertical strip if needed
+            if bottom_left or top_left:
+                bl_y = (y + radius) if bottom_left else y
+                tl_y = (y + height - radius) if top_left else (y + height)
+                v_height = tl_y - bl_y
+                if v_height > 0:
+                    aa_rect_shader.uniform_float("rectPos", (x, bl_y))
+                    aa_rect_shader.uniform_float("rectSize", (radius, v_height))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw right vertical strip if needed
+            if bottom_right or top_right:
+                br_y = (y + radius) if bottom_right else y
+                tr_y = (y + height - radius) if top_right else (y + height)
+                v_height = tr_y - br_y
+                if v_height > 0:
+                    aa_rect_shader.uniform_float("rectPos", (x + width - radius, br_y))
+                    aa_rect_shader.uniform_float("rectSize", (radius, v_height))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+        else:
+            # Fallback to regular rectangles
+            shader = DrawConstants.uniform_shader
+            shader.bind()
+            shader.uniform_float("color", color)
+            
+            # Draw main horizontal strip
+            h_left = x if not bottom_left and not top_left else x + radius
+            h_right = x + width if not bottom_right and not top_right else x + width - radius
+            h_width = h_right - h_left
+            
             with gpu.matrix.push_pop():
-                gpu.matrix.translate((x + radius, y + height - radius))
-                gpu.matrix.scale_uniform(radius)
-                DrawConstants.filled_circle_batch.draw(shader)
+                gpu.matrix.translate((h_left, y))
+                gpu.matrix.scale((h_width, height))
+                DrawConstants.rect_batch_h.draw(shader)
+            
+            # Draw left vertical strip if needed
+            if bottom_left or top_left:
+                bl_y = (y + radius) if bottom_left else y
+                tl_y = (y + height - radius) if top_left else (y + height)
+                v_height = tl_y - bl_y
+                
+                with gpu.matrix.push_pop():
+                    gpu.matrix.translate((x, bl_y))
+                    gpu.matrix.scale((radius, v_height))
+                    DrawConstants.rect_batch_v.draw(shader)
+            
+            # Draw right vertical strip if needed
+            if bottom_right or top_right:
+                br_y = (y + radius) if bottom_right else y
+                tr_y = (y + height - radius) if top_right else (y + height)
+                v_height = tr_y - br_y
+                
+                with gpu.matrix.push_pop():
+                    gpu.matrix.translate((x + width - radius, br_y))
+                    gpu.matrix.scale((radius, v_height))
+                    DrawConstants.rect_batch_v.draw(shader)
 
         gpu.state.blend_set('NONE')
 
     def _draw_rounded_border(self, x, y, width, height, radius, color, thickness):
-        """Draw a rounded rectangle border using smooth arc outlines.
+        """Draw a rounded rectangle border with anti-aliased edges.
 
         Args:
             x, y: Bottom-left position
@@ -486,55 +999,170 @@ class BL_UI_Dropdown(BL_UI_Widget):
         DrawConstants.initialize()
 
         gpu.state.blend_set('ALPHA')
-        gpu.state.line_width_set(thickness)
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Ensure color is a proper tuple with 4 components (RGBA)
+        if len(color) == 3:
+            color_rgba = (color[0], color[1], color[2], 1.0)
+        else:
+            color_rgba = color
+        
+        # Draw straight edges FIRST with anti-aliased rectangles
+        # This ensures edges cover the inner parts of corners, preventing corners from sticking out
+        if DrawConstants.anti_aliased_rect_shader is not None:
+            aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+            aa_rect_shader.bind()
+            aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+            aa_rect_shader.uniform_float("color", color_rgba)
+            # For thin borders, use very small edge softness to ensure visibility
+            # The border should be mostly opaque with just a tiny fade at the very edges
+            border_edge_softness = max(0.1, min(0.3, thickness * 0.3))
+            aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+            
+            # Extend slightly into corner area for seamless connection
+            edge_overlap = 0.5  # Extend 0.5px into corner area
+            
+            # Draw bottom edge (positioned so the border line is at y)
+            # For a 1px border, we want it from y to y + thickness, with anti-aliasing
+            if width - 2 * radius + 2 * edge_overlap > 0:
+                # Position rectangle so the bottom edge aligns with y
+                aa_rect_shader.uniform_float("rectPos", (x + radius - edge_overlap, y))
+                aa_rect_shader.uniform_float("rectSize", (width - 2 * radius + 2 * edge_overlap, thickness))
+                DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw top edge (positioned so the border line is at y + height)
+            if width - 2 * radius + 2 * edge_overlap > 0:
+                # Position rectangle so the top edge aligns with y + height
+                aa_rect_shader.uniform_float("rectPos", (x + radius - edge_overlap, y + height - thickness))
+                aa_rect_shader.uniform_float("rectSize", (width - 2 * radius + 2 * edge_overlap, thickness))
+                DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw left edge (positioned so the border line is at x)
+            # For very thin vertical borders, use simple solid rectangles to ensure visibility
+            if height - 2 * radius + 2 * edge_overlap > 0:
+                if thickness <= 1.0:
+                    # For 1px borders, use simple solid rectangle without anti-aliasing
+                    # This ensures the border is fully visible
+                    simple_shader = DrawConstants.uniform_shader
+                    simple_shader.bind()
+                    simple_shader.uniform_float("color", color_rgba)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((x, y + radius - edge_overlap))
+                        gpu.matrix.scale((thickness, height - 2 * radius + 2 * edge_overlap))
+                        DrawConstants.rect_batch_h.draw(simple_shader)
+                else:
+                    # For thicker borders, use anti-aliased shader
+                    vertical_edge_softness = max(0.05, min(0.2, thickness * 0.2))
+                    aa_rect_shader.uniform_float("edgeSoftness", vertical_edge_softness)
+                    aa_rect_shader.uniform_float("rectPos", (x, y + radius - edge_overlap))
+                    aa_rect_shader.uniform_float("rectSize", (thickness, height - 2 * radius + 2 * edge_overlap))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+            
+            # Draw right edge (positioned so the border line is at x + width)
+            if height - 2 * radius + 2 * edge_overlap > 0:
+                if thickness <= 1.0:
+                    # For 1px borders, use simple solid rectangle without anti-aliasing
+                    simple_shader = DrawConstants.uniform_shader
+                    simple_shader.bind()
+                    simple_shader.uniform_float("color", color_rgba)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((x + width - thickness, y + radius - edge_overlap))
+                        gpu.matrix.scale((thickness, height - 2 * radius + 2 * edge_overlap))
+                        DrawConstants.rect_batch_h.draw(simple_shader)
+                else:
+                    # For thicker borders, use anti-aliased shader
+                    vertical_edge_softness = max(0.05, min(0.2, thickness * 0.2))
+                    aa_rect_shader.uniform_float("edgeSoftness", vertical_edge_softness)
+                    aa_rect_shader.uniform_float("rectPos", (x + width - thickness, y + radius - edge_overlap))
+                    aa_rect_shader.uniform_float("rectSize", (thickness, height - 2 * radius + 2 * edge_overlap))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+        
+        # Use anti-aliased quarter-circle arc shader for corners
+        # Draw corners AFTER edges so they blend correctly on the outer edge
+        if DrawConstants.anti_aliased_arc_shader is not None:
+            aa_arc_shader = DrawConstants.anti_aliased_arc_shader
+            scale_size = (radius + thickness * 0.5 + 1.0) * 2.0
+            edge_softness = 1.0
+            
+            # Adjust radius to account for edge softness, similar to filled rectangles
+            # This prevents corners from sticking out
+            effective_radius = radius - edge_softness * 0.5
+            
+            # Corner definitions: (center_x, center_y, start_angle, end_angle)
+            corners = [
+                (x + radius, y + radius, math.pi, 1.5 * math.pi),              # Bottom-left
+                (x + width - radius, y + radius, 1.5 * math.pi, 2.0 * math.pi),  # Bottom-right
+                (x + width - radius, y + height - radius, 0.0, 0.5 * math.pi),   # Top-right
+                (x + radius, y + height - radius, 0.5 * math.pi, math.pi),     # Top-left
+            ]
+            
+            for cx, cy, start_angle, end_angle in corners:
+                aa_arc_shader.bind()
+                aa_arc_shader.uniform_float("center", (cx, cy))
+                aa_arc_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+                aa_arc_shader.uniform_float("radius", effective_radius)
+                aa_arc_shader.uniform_float("thickness", thickness)
+                aa_arc_shader.uniform_float("color", color_rgba)
+                aa_arc_shader.uniform_float("edgeSoftness", edge_softness)
+                aa_arc_shader.uniform_float("startAngle", start_angle)
+                aa_arc_shader.uniform_float("endAngle", end_angle)
+                aa_arc_shader.uniform_float("scale", scale_size)
+                DrawConstants.circle_quad_batch.draw(aa_arc_shader)
+        else:
+            # Fallback to regular border
+            gpu.state.line_width_set(thickness)
+            shader = DrawConstants.uniform_shader
+            shader.bind()
+            shader.uniform_float("color", color)
 
-        shader = DrawConstants.uniform_shader
-        shader.bind()
-        shader.uniform_float("color", color)
+            # Draw straight edge lines - Bottom edge
+            vertices = [(x + radius, y), (x + width - radius, y)]
+            batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
+            batch.draw(shader)
 
-        # Draw straight edge lines - Bottom edge
-        vertices = [(x + radius, y), (x + width - radius, y)]
-        batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
-        batch.draw(shader)
+            # Right edge
+            vertices = [(x + width, y + radius), (x + width, y + height - radius)]
+            batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
+            batch.draw(shader)
 
-        # Right edge
-        vertices = [(x + width, y + radius), (x + width, y + height - radius)]
-        batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
-        batch.draw(shader)
+            # Top edge
+            vertices = [(x + width - radius, y + height), (x + radius, y + height)]
+            batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
+            batch.draw(shader)
 
-        # Top edge
-        vertices = [(x + width - radius, y + height), (x + radius, y + height)]
-        batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
-        batch.draw(shader)
+            # Left edge
+            vertices = [(x, y + height - radius), (x, y + radius)]
+            batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
+            batch.draw(shader)
 
-        # Left edge
-        vertices = [(x, y + height - radius), (x, y + radius)]
-        batch = batch_for_shader(shader, 'LINES', {"pos": vertices})
-        batch.draw(shader)
+            # Draw quarter-circle arcs at corners
+            segments_per_arc = 32
+            corners = [
+                (x + radius, y + radius, math.pi, 1.5 * math.pi),              # Bottom-left
+                (x + width - radius, y + radius, 1.5 * math.pi, 2 * math.pi),  # Bottom-right
+                (x + width - radius, y + height - radius, 0, 0.5 * math.pi),   # Top-right
+                (x + radius, y + height - radius, 0.5 * math.pi, math.pi),     # Top-left
+            ]
 
-        # Draw quarter-circle arcs at corners
-        segments_per_arc = 32
+            for cx, cy, start_angle, end_angle in corners:
+                arc_vertices = []
+                for i in range(segments_per_arc + 1):
+                    angle = start_angle + (end_angle - start_angle) * i / segments_per_arc
+                    vx = cx + radius * math.cos(angle)
+                    vy = cy + radius * math.sin(angle)
+                    arc_vertices.append((vx, vy))
 
-        # Corner definitions: (center_x, center_y, start_angle, end_angle)
-        corners = [
-            (x + radius, y + radius, math.pi, 1.5 * math.pi),              # Bottom-left
-            (x + width - radius, y + radius, 1.5 * math.pi, 2 * math.pi),  # Bottom-right
-            (x + width - radius, y + height - radius, 0, 0.5 * math.pi),   # Top-right
-            (x + radius, y + height - radius, 0.5 * math.pi, math.pi),     # Top-left
-        ]
+                arc_batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": arc_vertices})
+                arc_batch.draw(shader)
 
-        for cx, cy, start_angle, end_angle in corners:
-            arc_vertices = []
-            for i in range(segments_per_arc + 1):
-                angle = start_angle + (end_angle - start_angle) * i / segments_per_arc
-                vx = cx + radius * math.cos(angle)
-                vy = cy + radius * math.sin(angle)
-                arc_vertices.append((vx, vy))
+            gpu.state.line_width_set(1.0)
 
-            arc_batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": arc_vertices})
-            arc_batch.draw(shader)
-
-        gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
 
     def draw(self):
@@ -602,44 +1230,54 @@ class BL_UI_Dropdown(BL_UI_Widget):
         if self._is_open and self._items:
             item_height = 24
             dropdown_y = self.y_screen + self.height
+            total_height = len(self._items) * item_height
 
+            # Draw all items as one continuous shape with only outer corners rounded
+            # This ensures no gaps between items
+            draw_rounded_rect(
+                self.x_screen, dropdown_y, self.width, total_height,
+                4, self._bg_color, segments=16
+            )
+
+            # Now draw hovered item on top with different color
+            if 0 <= self._hovered_item_index < len(self._items):
+                hovered_item_y = dropdown_y + (self._hovered_item_index * item_height)
+                # Draw hovered item background (will cover the base color)
+                if DrawConstants.anti_aliased_rect_shader is not None:
+                    viewport = gpu.state.viewport_get()
+                    viewport_width = viewport[2] if len(viewport) > 2 else 1920
+                    viewport_height = viewport[3] if len(viewport) > 3 else 1080
+                    
+                    if len(self._hover_bg_color) == 3:
+                        color_rgba = (self._hover_bg_color[0], self._hover_bg_color[1], self._hover_bg_color[2], 1.0)
+                    else:
+                        color_rgba = self._hover_bg_color
+                    
+                    gpu.state.blend_set('ALPHA')
+                    aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+                    aa_rect_shader.bind()
+                    aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+                    aa_rect_shader.uniform_float("color", color_rgba)
+                    aa_rect_shader.uniform_float("edgeSoftness", 1.0)
+                    aa_rect_shader.uniform_float("rectPos", (self.x_screen, hovered_item_y))
+                    aa_rect_shader.uniform_float("rectSize", (self.width, item_height))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    gpu.state.blend_set('NONE')
+                else:
+                    # Fallback
+                    gpu.state.blend_set('ALPHA')
+                    shader = DrawConstants.uniform_shader
+                    shader.bind()
+                    shader.uniform_float("color", self._hover_bg_color)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((self.x_screen, hovered_item_y))
+                        gpu.matrix.scale((self.width, item_height))
+                        DrawConstants.rect_batch_h.draw(shader)
+                    gpu.state.blend_set('NONE')
+
+            # Draw item text for all items
             for i, item in enumerate(self._items):
                 item_y = dropdown_y + (i * item_height)
-
-                # Check if this item is being hovered
-                is_hovered = (i == self._hovered_item_index)
-
-                # Determine which corners should be rounded
-                is_first_item = (i == 0)
-                is_last_item = (i == len(self._items) - 1)
-
-                # Draw item background with selective rounded corners
-                color = self._hover_bg_color if is_hovered else self._bg_color
-
-                if is_first_item and is_last_item:
-                    # Single item - round all corners
-                    self._draw_selective_rounded_rect(
-                        self.x_screen, item_y, self.width, item_height,
-                        color, top_left=True, top_right=True, bottom_left=True, bottom_right=True
-                    )
-                elif is_first_item:
-                    # First item (at bottom of list) - round only bottom corners
-                    self._draw_selective_rounded_rect(
-                        self.x_screen, item_y, self.width, item_height,
-                        color, top_left=False, top_right=False, bottom_left=True, bottom_right=True
-                    )
-                elif is_last_item:
-                    # Last item (at top of list) - round only top corners
-                    self._draw_selective_rounded_rect(
-                        self.x_screen, item_y, self.width, item_height,
-                        color, top_left=True, top_right=True, bottom_left=False, bottom_right=False
-                    )
-                else:
-                    # Middle items - no rounded corners
-                    self._draw_selective_rounded_rect(
-                        self.x_screen, item_y, self.width, item_height,
-                        color, top_left=False, top_right=False, bottom_left=False, bottom_right=False
-                    )
 
                 # Draw item text
                 blf.size(0, self._text_size)
@@ -766,56 +1404,159 @@ class BL_UI_Checkbox(BL_UI_Widget):
         blf.draw(0, self._text)
 
     def _draw_checkbox_border(self, x, y, size, color, thickness):
-        """Draw checkbox border."""
-        import math
+        """Draw checkbox border with anti-aliasing."""
+        DrawConstants.initialize()
+        
         gpu.state.blend_set('ALPHA')
-        gpu.state.line_width_set(thickness)
-
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Ensure color is a proper tuple with 4 components (RGBA)
+        if len(color) == 3:
+            color_rgba = (color[0], color[1], color[2], 1.0)
+        else:
+            color_rgba = color
+        
         radius = 2
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-        vertices = []
+        
+        # Draw straight edges FIRST with anti-aliased rectangles
+        if DrawConstants.anti_aliased_rect_shader is not None:
+            aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+            aa_rect_shader.bind()
+            aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+            aa_rect_shader.uniform_float("color", color_rgba)
+            # Use very small edge softness for thin borders
+            border_edge_softness = max(0.1, min(0.3, thickness * 0.3))
+            aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+            
+            edge_overlap = 0.5
+            
+            # Draw bottom edge
+            if size - 2 * radius + 2 * edge_overlap > 0:
+                aa_rect_shader.uniform_float("rectPos", (x + radius - edge_overlap, y))
+                aa_rect_shader.uniform_float("rectSize", (size - 2 * radius + 2 * edge_overlap, thickness))
+                DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw top edge
+            if size - 2 * radius + 2 * edge_overlap > 0:
+                aa_rect_shader.uniform_float("rectPos", (x + radius - edge_overlap, y + size - thickness))
+                aa_rect_shader.uniform_float("rectSize", (size - 2 * radius + 2 * edge_overlap, thickness))
+                DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+            
+            # Draw left edge
+            if size - 2 * radius + 2 * edge_overlap > 0:
+                if thickness <= 1.0:
+                    # For 1px borders, use simple solid rectangle
+                    simple_shader = DrawConstants.uniform_shader
+                    simple_shader.bind()
+                    simple_shader.uniform_float("color", color_rgba)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((x, y + radius - edge_overlap))
+                        gpu.matrix.scale((thickness, size - 2 * radius + 2 * edge_overlap))
+                        DrawConstants.rect_batch_h.draw(simple_shader)
+                else:
+                    vertical_edge_softness = max(0.05, min(0.2, thickness * 0.2))
+                    aa_rect_shader.uniform_float("edgeSoftness", vertical_edge_softness)
+                    aa_rect_shader.uniform_float("rectPos", (x, y + radius - edge_overlap))
+                    aa_rect_shader.uniform_float("rectSize", (thickness, size - 2 * radius + 2 * edge_overlap))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+            
+            # Draw right edge
+            if size - 2 * radius + 2 * edge_overlap > 0:
+                if thickness <= 1.0:
+                    # For 1px borders, use simple solid rectangle
+                    simple_shader = DrawConstants.uniform_shader
+                    simple_shader.bind()
+                    simple_shader.uniform_float("color", color_rgba)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((x + size - thickness, y + radius - edge_overlap))
+                        gpu.matrix.scale((thickness, size - 2 * radius + 2 * edge_overlap))
+                        DrawConstants.rect_batch_h.draw(simple_shader)
+                else:
+                    vertical_edge_softness = max(0.05, min(0.2, thickness * 0.2))
+                    aa_rect_shader.uniform_float("edgeSoftness", vertical_edge_softness)
+                    aa_rect_shader.uniform_float("rectPos", (x + size - thickness, y + radius - edge_overlap))
+                    aa_rect_shader.uniform_float("rectSize", (thickness, size - 2 * radius + 2 * edge_overlap))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    aa_rect_shader.uniform_float("edgeSoftness", border_edge_softness)
+        
+        # Use anti-aliased quarter-circle arc shader for corners
+        if DrawConstants.anti_aliased_arc_shader is not None:
+            aa_arc_shader = DrawConstants.anti_aliased_arc_shader
+            scale_size = (radius + thickness * 0.5 + 1.0) * 2.0
+            edge_softness = 1.0
+            effective_radius = radius - edge_softness * 0.5
+            
+            # Corner definitions: (center_x, center_y, start_angle, end_angle)
+            corners = [
+                (x + radius, y + radius, math.pi, 1.5 * math.pi),              # Bottom-left
+                (x + size - radius, y + radius, 1.5 * math.pi, 2.0 * math.pi),  # Bottom-right
+                (x + size - radius, y + size - radius, 0.0, 0.5 * math.pi),   # Top-right
+                (x + radius, y + size - radius, 0.5 * math.pi, math.pi),     # Top-left
+            ]
+            
+            for cx, cy, start_angle, end_angle in corners:
+                aa_arc_shader.bind()
+                aa_arc_shader.uniform_float("center", (cx, cy))
+                aa_arc_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+                aa_arc_shader.uniform_float("radius", effective_radius)
+                aa_arc_shader.uniform_float("thickness", thickness)
+                aa_arc_shader.uniform_float("color", color_rgba)
+                aa_arc_shader.uniform_float("edgeSoftness", edge_softness)
+                aa_arc_shader.uniform_float("startAngle", start_angle)
+                aa_arc_shader.uniform_float("endAngle", end_angle)
+                aa_arc_shader.uniform_float("scale", scale_size)
+                DrawConstants.circle_quad_batch.draw(aa_arc_shader)
+        else:
+            # Fallback to regular border
+            gpu.state.line_width_set(thickness)
+            shader = DrawConstants.uniform_shader
+            shader.bind()
+            shader.uniform_float("color", color)
+            
+            vertices = []
+            segments = 4
+            # Bottom edge
+            vertices.append((x + radius, y))
+            vertices.append((x + size - radius, y))
+            # Bottom-right corner
+            cx, cy = x + size - radius, y + radius
+            for i in range(segments + 1):
+                angle = 1.5 * math.pi + (0.5 * math.pi * i / segments)
+                vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+            # Right edge
+            vertices.append((x + size, y + size - radius))
+            # Top-right corner
+            cx, cy = x + size - radius, y + size - radius
+            for i in range(segments + 1):
+                angle = 0 + (0.5 * math.pi * i / segments)
+                vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+            # Top edge
+            vertices.append((x + size - radius, y + size))
+            vertices.append((x + radius, y + size))
+            # Top-left corner
+            cx, cy = x + radius, y + size - radius
+            for i in range(segments + 1):
+                angle = 0.5 * math.pi + (0.5 * math.pi * i / segments)
+                vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+            # Left edge
+            vertices.append((x, y + size - radius))
+            vertices.append((x, y + radius))
+            # Bottom-left corner
+            cx, cy = x + radius, y + radius
+            for i in range(segments + 1):
+                angle = math.pi + (0.5 * math.pi * i / segments)
+                vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+            vertices.append((x + radius, y))
+            
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": vertices})
+            batch.draw(shader)
+            gpu.state.line_width_set(1.0)
 
-        # Create rounded rectangle border
-        segments = 4
-        # Bottom edge
-        vertices.append((x + radius, y))
-        vertices.append((x + size - radius, y))
-        # Bottom-right corner
-        cx, cy = x + size - radius, y + radius
-        for i in range(segments + 1):
-            angle = 1.5 * math.pi + (0.5 * math.pi * i / segments)
-            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        # Right edge
-        vertices.append((x + size, y + size - radius))
-        # Top-right corner
-        cx, cy = x + size - radius, y + size - radius
-        for i in range(segments + 1):
-            angle = 0 + (0.5 * math.pi * i / segments)
-            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        # Top edge
-        vertices.append((x + size - radius, y + size))
-        vertices.append((x + radius, y + size))
-        # Top-left corner
-        cx, cy = x + radius, y + size - radius
-        for i in range(segments + 1):
-            angle = 0.5 * math.pi + (0.5 * math.pi * i / segments)
-            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        # Left edge
-        vertices.append((x, y + size - radius))
-        vertices.append((x, y + radius))
-        # Bottom-left corner
-        cx, cy = x + radius, y + radius
-        for i in range(segments + 1):
-            angle = math.pi + (0.5 * math.pi * i / segments)
-            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        vertices.append((x + radius, y))
-
-        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": vertices})
-        shader.bind()
-        shader.uniform_float("color", color)
-        batch.draw(shader)
-
-        gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
 
     def _draw_checkmark(self, x, y, size):
@@ -862,8 +1603,8 @@ class BL_UI_ToggleButton(BL_UI_Widget):
         self._icon_path = None  # Path to icon image (PNG)
         self._icon_image = None  # Loaded Blender image
         self._icon_texture = None  # GPU texture from image
-        self._bg_color = (0.133, 0.133, 0.133, 1.0)  # #222222
-        self._toggled_bg_color = (0.047, 0.549, 0.914, 1.0)  # Blue when toggled
+        self._bg_color = (0.137, 0.137, 0.137, 1.0)  # #232323
+        self._toggled_bg_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8 when toggled
         self._hover_bg_color = (0.2, 0.2, 0.2, 1.0)
         self._border_color = (0.329, 0.329, 0.329, 1.0)
         self._text_color = (1.0, 1.0, 1.0, 1.0)
@@ -1114,15 +1855,16 @@ class BL_UI_Slider(BL_UI_Widget):
         self._track_color = (0.333, 0.333, 0.333, 1.0)  # #555555
         self._track_border_color = (0.329, 0.329, 0.329, 1.0)
         self._handle_radius = 8
-        self._handle_color = (0.047, 0.549, 0.914, 1.0)  # Blue like Accept button
-        self._handle_hover_color = (0.067, 0.629, 1.0, 1.0)
-        self._handle_pressed_color = (0.039, 0.469, 0.834, 1.0)
+        self._handle_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8
+        self._handle_hover_color = (0.094, 0.620, 1.0, 1.0)  # Slightly lighter
+        self._handle_pressed_color = (0.055, 0.463, 0.820, 1.0)  # Slightly darker
         self._marker_active_color = (0.333, 0.333, 0.333, 1.0)  # #555555 for available LODs
         self._marker_inactive_color = (0.071, 0.071, 0.071, 1.0)  # #121212 for unavailable LODs
         self._minmax_marker_color = (0.804, 0.804, 0.804, 1.0)  # #CDCDCD for min/max LOD markers
 
         # State
         self._is_hovered = False
+        self._is_loading = False  # Track loading state for visual feedback
         self.on_value_changed = None
 
         # Min/Max LOD markers (set from toolbar)
@@ -1137,6 +1879,10 @@ class BL_UI_Slider(BL_UI_Widget):
         """Set the min and max LOD values for displaying markers above the track."""
         self._min_lod = min_lod
         self._max_lod = max_lod
+
+    def set_loading_state(self, is_loading):
+        """Set the loading state of the slider (affects handle color)."""
+        self._is_loading = is_loading
 
     def set_value(self, value):
         """Set the slider value (LOD level 0-7), clamped to min/max range."""
@@ -1260,7 +2006,10 @@ class BL_UI_Slider(BL_UI_Widget):
         handle_y = self.y_screen + self.height / 2
 
         # Choose handle color based on state
-        if self._is_dragging:
+        # Loading state takes priority (gray when loading)
+        if self._is_loading:
+            handle_color = (0.5, 0.5, 0.5, 1.0)  # Gray when loading
+        elif self._is_dragging:
             handle_color = self._handle_pressed_color
         elif self._is_hovered:
             handle_color = self._handle_hover_color
@@ -1274,51 +2023,111 @@ class BL_UI_Slider(BL_UI_Widget):
         self._draw_circle_outline(handle_x, handle_y, self._handle_radius, (1.0, 1.0, 1.0, 1.0), 2)
 
     def _draw_circle(self, cx, cy, radius, color):
-        """Draw a filled circle."""
+        """Draw a filled circle with anti-aliased edges."""
+        # Initialize shader if needed
+        DrawConstants.initialize()
+        
+        # Fallback to old method if shader creation failed
+        if DrawConstants.anti_aliased_circle_shader is None:
+            # Use original triangle fan method as fallback
+            gpu.state.blend_set('ALPHA')
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            segments = 32
+            vertices = [(cx, cy)]  # Center
+            for i in range(segments + 1):
+                angle = 2 * math.pi * i / segments
+                x = cx + radius * math.cos(angle)
+                y = cy + radius * math.sin(angle)
+                vertices.append((x, y))
+            indices = []
+            for i in range(segments):
+                indices.append((0, i + 1, i + 2))
+            batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices=indices)
+            shader.bind()
+            shader.uniform_float("color", color)
+            batch.draw(shader)
+            gpu.state.blend_set('NONE')
+            return
+        
         gpu.state.blend_set('ALPHA')
 
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-        segments = 32
-        vertices = [(cx, cy)]  # Center
-
-        for i in range(segments + 1):
-            angle = 2 * math.pi * i / segments
-            x = cx + radius * math.cos(angle)
-            y = cy + radius * math.sin(angle)
-            vertices.append((x, y))
-
-        indices = []
-        for i in range(segments):
-            indices.append((0, i + 1, i + 2))
-
-        batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices=indices)
+        shader = DrawConstants.anti_aliased_circle_shader
         shader.bind()
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Set shader uniforms
+        shader.uniform_float("center", (cx, cy))
+        shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+        shader.uniform_float("radius", radius)
         shader.uniform_float("color", color)
-        batch.draw(shader)
+        shader.uniform_float("edgeSoftness", 1.0)  # 1-pixel soft edge for smooth anti-aliasing
+        
+        # Calculate scale to cover the circle area (with some padding for edge softness)
+        # Scale the unit quad to cover radius + edgeSoftness on each side
+        scale_size = (radius + 1.0) * 2.0
+        shader.uniform_float("scale", scale_size)
+        
+        # Draw the quad (no matrix transforms needed, shader handles coordinates)
+        DrawConstants.circle_quad_batch.draw(shader)
 
         gpu.state.blend_set('NONE')
 
     def _draw_circle_outline(self, cx, cy, radius, color, thickness):
-        """Draw a circle outline."""
+        """Draw a circle outline with anti-aliased edges."""
+        # Initialize shader if needed
+        DrawConstants.initialize()
+        
+        # Fallback to old method if shader creation failed
+        if DrawConstants.anti_aliased_circle_outline_shader is None:
+            # Use original line strip method as fallback
+            gpu.state.blend_set('ALPHA')
+            gpu.state.line_width_set(thickness)
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            segments = 32
+            vertices = []
+            for i in range(segments + 1):
+                angle = 2 * math.pi * i / segments
+                x = cx + radius * math.cos(angle)
+                y = cy + radius * math.sin(angle)
+                vertices.append((x, y))
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": vertices})
+            shader.bind()
+            shader.uniform_float("color", color)
+            batch.draw(shader)
+            gpu.state.line_width_set(1.0)
+            gpu.state.blend_set('NONE')
+            return
+        
         gpu.state.blend_set('ALPHA')
-        gpu.state.line_width_set(thickness)
 
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-        segments = 32
-        vertices = []
-
-        for i in range(segments + 1):
-            angle = 2 * math.pi * i / segments
-            x = cx + radius * math.cos(angle)
-            y = cy + radius * math.sin(angle)
-            vertices.append((x, y))
-
-        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": vertices})
+        shader = DrawConstants.anti_aliased_circle_outline_shader
         shader.bind()
+        
+        # Get viewport size for coordinate conversion
+        viewport = gpu.state.viewport_get()
+        viewport_width = viewport[2] if len(viewport) > 2 else 1920
+        viewport_height = viewport[3] if len(viewport) > 3 else 1080
+        
+        # Set shader uniforms
+        shader.uniform_float("center", (cx, cy))
+        shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+        shader.uniform_float("radius", radius)
+        shader.uniform_float("thickness", thickness)
         shader.uniform_float("color", color)
-        batch.draw(shader)
+        shader.uniform_float("edgeSoftness", 1.0)  # 1-pixel soft edge for smooth anti-aliasing
+        
+        # Calculate scale to cover the outline area (with some padding for edge softness)
+        # Scale the unit quad to cover radius + thickness/2 + edgeSoftness on each side
+        scale_size = (radius + thickness * 0.5 + 1.0) * 2.0
+        shader.uniform_float("scale", scale_size)
+        
+        # Draw the quad (no matrix transforms needed, shader handles coordinates)
+        DrawConstants.circle_quad_batch.draw(shader)
 
-        gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
 
     def _is_handle_hovered(self, x, y):
@@ -1425,9 +2234,22 @@ class ImportToolbar:
         self.lod_original_positions = {}  # {obj_name: (x, y, z)}
         self.lod_text_objects = []  # List of created text objects
 
+        # OPTIMIZED: Store attach roots as source of truth
+        # Attach roots contain ALL data needed:
+        #  - attach_root.children = all objects for this variation
+        #  - attach_root["lod_levels"] = [0, 1, 2, ...]
+        #  - attach_root["lod_0_objects"] = "obj1,obj2,obj3"
+        # No need for global object lists or redundant organization!
+        self.attach_roots = []
+
         # LOD slider state
         self.show_all_lods = True  # Show All checkbox state
         self.current_preview_lod = 0  # Currently visible LOD (when Show All = False)
+
+        # LOD loading state management for debouncing
+        self.lod_loading_state = False  # Track if LOD is currently loading
+        self.pending_lod_timer = None  # Store timer handle for debouncing
+        self.target_lod = None  # The LOD level that should be loaded after debounce
 
         # Callbacks
         self.on_accept = None
@@ -1542,12 +2364,12 @@ class ImportToolbar:
         accept_x = buttons_start_x + button_width + button_spacing
         self.accept_button = BL_UI_Button(accept_x, button_y, button_width, button_height)
         self.accept_button.text = "Accept"
-        # Normal: #0c8ce9 = RGB(12, 140, 233) = (12/255, 140/255, 233/255)
-        self.accept_button._normal_bg_color = (0.047, 0.549, 0.914, 1.0)
+        # Normal: #138ae8 = RGB(19, 138, 232) = (19/255, 138/255, 232/255)
+        self.accept_button._normal_bg_color = (0.0745, 0.541, 0.910, 1.0)
         # Hover: slightly lighter blue
-        self.accept_button._hover_bg_color = (0.067, 0.629, 1.0, 1.0)
+        self.accept_button._hover_bg_color = (0.094, 0.620, 1.0, 1.0)
         # Pressed: slightly darker blue
-        self.accept_button._pressed_bg_color = (0.027, 0.469, 0.834, 1.0)
+        self.accept_button._pressed_bg_color = (0.055, 0.463, 0.820, 1.0)
         self.accept_button.set_mouse_up(self._handle_accept)
         self.accept_button.init(context)
 
@@ -1618,13 +2440,75 @@ class ImportToolbar:
         self.visible = True
 
     def _handle_slider_change(self, lod_level):
-        """Handle LOD slider value change."""
-        self.current_preview_lod = lod_level
-        self.lod_slider_label_text = f"LOD{lod_level}"
-        print(f"  🎚️  Slider changed to LOD{lod_level}")
+        """Handle LOD slider value change with debouncing.
+        
+        Immediately updates slider visual position and sets loading state.
+        Defers actual LOD visibility update via timer to avoid processing
+        intermediate steps when sliding quickly.
+        """
+        import bpy
+        
+        # OPTIMIZATION: Only update if LOD level actually changed!
+        # This prevents hundreds of redundant calls during slider drag
+        if hasattr(self, 'current_preview_lod') and self.current_preview_lod == lod_level:
+            return
 
-        # Update visibility immediately
+        # Immediately update label text for responsive UI
+        self.lod_slider_label_text = f"LOD{lod_level}"
+        
+        # Store target LOD for timer callback
+        self.target_lod = lod_level
+        
+        # Set loading state (gray handle)
+        self.lod_loading_state = True
+        if self.lod_slider:
+            self.lod_slider.set_loading_state(True)
+        
+        # Cancel any existing pending timer
+        if self.pending_lod_timer is not None:
+            if bpy.app.timers.is_registered(self.pending_lod_timer):
+                bpy.app.timers.unregister(self.pending_lod_timer)
+            self.pending_lod_timer = None
+        
+        # Register new timer to process LOD change after debounce delay (150ms)
+        self.pending_lod_timer = self._process_lod_change_timer
+        bpy.app.timers.register(self.pending_lod_timer, first_interval=0.15)
+
+    def _process_lod_change_timer(self):
+        """Timer callback to process LOD change after debounce delay.
+        
+        This is called by bpy.app.timers after the debounce period.
+        Processes the target LOD and updates loading state.
+        """
+        import bpy
+        
+        # Check if we still have a valid target LOD
+        if self.target_lod is None:
+            # No target, clear loading state and unregister
+            self.lod_loading_state = False
+            if self.lod_slider:
+                self.lod_slider.set_loading_state(False)
+            self.pending_lod_timer = None
+            return None  # Unregister timer
+        
+        # Process the LOD change
+        target = self.target_lod
+        self.current_preview_lod = target
+        
+        # Update visibility (this is the actual operation that was deferred)
         self.update_lod_visibility()
+        
+        # Clear loading state (blue handle)
+        self.lod_loading_state = False
+        if self.lod_slider:
+            self.lod_slider.set_loading_state(False)
+        
+        # Clear timer reference
+        self.pending_lod_timer = None
+        self.target_lod = None
+        
+        # Unregister timer (return None)
+        return None
 
     def _handle_wireframe_toggle(self, toggled):
         """Handle wireframe toggle button."""
@@ -1675,53 +2559,39 @@ class ImportToolbar:
     def update_lod_visibility(self):
         """Show/hide LODs based on slider position.
 
-        Only the selected LOD (from slider) is visible at its original position.
-        All LODs remain at their original positions (no X offset).
+        OPTIMIZED: Uses attach roots as source of truth.
+        Reads LOD level from custom property (instant), no name parsing needed!
         """
         import bpy
-        from ..operations.asset_processor import extract_lod_from_object_name
 
-        if not self.imported_objects:
+        if not self.attach_roots:
             return
 
-        print(f"\n  👁️  Updating LOD visibility (Current LOD: {self.current_preview_lod})")
+        # Loop through each attach root (one per variation)
+        for attach_root in self.attach_roots:
+            # Loop through children of this attach root
+            for child in attach_root.children:
+                # Skip non-mesh objects
+                if child.type != 'MESH':
+                    continue
 
-        # Update visibility for all imported objects
-        for obj in self.imported_objects:
-            # Skip if object no longer exists or isn't a mesh
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
+                # Read LOD level from custom property (instant access!)
+                lod_level = child.get("lod_level", 0)
 
-            # Get LOD level from object name
-            lod_level = extract_lod_from_object_name(obj.name)
+                # Use eye icon (hide_set) for instant local hiding - NOT monitor icon!
+                should_hide = (lod_level != self.current_preview_lod)
+                child.hide_set(should_hide)
 
-            # Only show the currently selected LOD using the eye icon (hide_viewport)
-            # Also ensure the monitor/display icon is NOT hiding the object (hide_set)
-            if lod_level == self.current_preview_lod:
-                obj.hide_viewport = False  # Eye icon - visible
-                obj.hide_set(False)  # Monitor icon - enabled in viewport
-            else:
-                obj.hide_viewport = True  # Eye icon - hidden
-                obj.hide_set(False)  # Monitor icon - enabled in viewport (so eye icon works)
+        # Update text labels using eye icon
+        if self.lod_text_objects:
+            for text_obj, lod_level in self.lod_text_objects:
+                should_hide = (lod_level != self.current_preview_lod)
+                text_obj.hide_set(should_hide)
 
-        # Update text label visibility - only show label for current LOD
-        for text_obj, lod_level in self.lod_text_objects:
-            if text_obj and text_obj.name in bpy.data.objects:
-                if lod_level == self.current_preview_lod:
-                    text_obj.hide_viewport = False
-                    text_obj.hide_render = False
-                else:
-                    text_obj.hide_viewport = True
-                    text_obj.hide_render = True
-
-        # Force viewport update
+        # Tag viewport for redraw
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
-
-        print(f"  ✅ Visibility updated: Showing LOD{self.current_preview_lod}")
 
     def _handle_accept(self, button):
         """Handle Accept button click."""
@@ -1753,13 +2623,13 @@ class ImportToolbar:
         self.reset_lod_positions_and_cleanup()
 
         # Step 1: Apply material from selected LOD to all LOD levels
-        print(f"\n  🎨 Applying material from LOD{target_lod} to all LOD levels")
+        # Print removed to reduce console clutter
         self._apply_material_to_all_lods(target_lod)
 
         # Step 2: Apply LOD filtering if target LOD > 0 (BEFORE auto LOD generation)
         # This renames LODs so that the selected min LOD becomes LOD0
         if target_lod > 0:
-            print(f"\n  📊 Applying LOD filter: keeping LOD{target_lod} and above")
+            # Print removed to reduce console clutter
             self._apply_lod_filter(target_lod)
             # After filtering, the base is now LOD0, so we generate from 0 to max_lod
             adjusted_min_lod = 0
@@ -1768,15 +2638,15 @@ class ImportToolbar:
 
         # Step 3: Generate auto LOD levels if enabled (AFTER filtering)
         if self.auto_lod_enabled:
-            print(f"\n  🔧 Generating Auto LOD levels (LOD{adjusted_min_lod} to LOD{max_lod})")
+            # Print removed to reduce console clutter
             self._generate_auto_lods(adjusted_min_lod, max_lod)
 
         # Step 4: Clean up unused materials
-        print(f"\n  🧹 Cleaning up unused materials")
+        # Print removed to reduce console clutter
         self._cleanup_unused_materials()
 
         # Step 5: Show only the lowest LOD level (highest number)
-        print(f"\n  👁️ Setting visibility: showing only lowest LOD")
+        # Print removed to reduce console clutter
         self._show_only_lowest_lod()
 
         if self.on_accept:
@@ -1798,24 +2668,26 @@ class ImportToolbar:
         # Find the object at min_lod level to use as the base
         base_objects = []
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
 
-            lod_level = extract_lod_from_object_name(obj.name)
-            if lod_level == min_lod:
-                base_objects.append(obj)
+                lod_level = extract_lod_from_object_name(obj.name)
+                if lod_level == min_lod:
+                    base_objects.append(obj)
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
+                continue
 
         if not base_objects:
-            print(f"  ⚠️  No objects found at LOD{min_lod} to use as base for auto LOD generation")
+            # Print removed to reduce console clutter
             return
 
-        print(f"  📋 Found {len(base_objects)} base object(s) at LOD{min_lod}")
+        # Prints removed to reduce console clutter
 
         # Calculate decimation ratios based on steps from base LOD
         # Each step is 50% of the base: step 1 = 50%, step 2 = 25%, step 3 = 12.5%, etc.
-        print(f"  📊 LOD decimation ratios (relative to LOD{min_lod}):")
 
         # Generate LOD levels
         new_objects = []
@@ -1827,15 +2699,17 @@ class ImportToolbar:
                 # Skip if this LOD already exists
                 existing = False
                 for obj in self.imported_objects:
-                    if obj and obj.name in bpy.data.objects:
+                    try:
                         if extract_lod_from_object_name(obj.name) == target_lod:
                             # Check if it's the same variation (same parent)
                             if obj.parent == base_obj.parent:
                                 existing = True
                                 break
+                    except (AttributeError, ReferenceError):
+                        continue
 
                 if existing:
-                    print(f"    ⏭️  LOD{target_lod} already exists for {base_obj.name}, skipping")
+                    # Print removed to reduce console clutter
                     continue
 
                 # Calculate decimation ratio based on steps from base LOD
@@ -1880,13 +2754,13 @@ class ImportToolbar:
                 # Calculate new polycount
                 new_polycount = len(new_obj.data.polygons)
 
-                print(f"    ✅ Created LOD{target_lod}: {base_polycount:,} → {new_polycount:,} tris ({ratio*100:.1f}% of LOD{min_lod}, step {steps_from_base})")
+                # Print removed to reduce console clutter
 
                 # Add to tracking lists
                 new_objects.append(new_obj)
                 self.imported_objects.append(new_obj)
 
-        print(f"  ✅ Generated {len(new_objects)} new LOD object(s)")
+        # Print removed to reduce console clutter
 
     def _apply_material_to_all_lods(self, target_lod):
         """Apply material from target LOD to all LOD levels and rename it.
@@ -1903,25 +2777,28 @@ class ImportToolbar:
         target_obj = None
 
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
 
-            # Check if this object is at the target LOD level
-            lod_level = extract_lod_from_object_name(obj.name)
-            if lod_level == target_lod:
-                # Get the material from this object
-                if obj.data.materials and len(obj.data.materials) > 0:
-                    target_material = obj.data.materials[0]
-                    target_obj = obj
-                    break
+                # Check if this object is at the target LOD level
+                lod_level = extract_lod_from_object_name(obj.name)
+                if lod_level == target_lod:
+                    # Get the material from this object
+                    if obj.data.materials and len(obj.data.materials) > 0:
+                        target_material = obj.data.materials[0]
+                        target_obj = obj
+                        break
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
+                continue
 
         if not target_material:
-            print(f"  ⚠️  No material found on LOD{target_lod}, skipping material application")
+            # Print removed to reduce console clutter
             return
 
-        print(f"  ✅ Found material '{target_material.name}' on LOD{target_lod}")
+        # Print removed to reduce console clutter
 
         # Step 2: Remove LOD suffix from material name
         old_mat_name = target_material.name
@@ -1931,22 +2808,25 @@ class ImportToolbar:
 
         if new_mat_name != old_mat_name:
             target_material.name = new_mat_name
-            print(f"  ✏️  Renamed material: '{old_mat_name}' → '{new_mat_name}'")
+            # Print removed to reduce console clutter
 
         # Step 3: Apply this material to ALL LOD levels
         materials_applied = 0
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
+
+                # Clear existing materials and apply the target material
+                obj.data.materials.clear()
+                obj.data.materials.append(target_material)
+                materials_applied += 1
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
                 continue
 
-            # Clear existing materials and apply the target material
-            obj.data.materials.clear()
-            obj.data.materials.append(target_material)
-            materials_applied += 1
-
-        print(f"  ✅ Applied material '{target_material.name}' to {materials_applied} object(s)")
+        # Print removed to reduce console clutter
 
     def _apply_lod_filter(self, target_lod):
         """Filter and rename LODs based on selection.
@@ -1965,21 +2845,23 @@ class ImportToolbar:
 
         # Step 1: Categorize objects by LOD level
         for obj in list(self.imported_objects):
-            if not obj or obj.name not in bpy.data.objects:
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
+
+                # Get LOD level from object name
+                lod_level = extract_lod_from_object_name(obj.name)
+
+                if lod_level < target_lod:
+                    # Delete this object
+                    objects_to_delete.append(obj)
+                else:
+                    # Rename this object
+                    objects_to_rename.append((obj, lod_level))
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
                 continue
-
-            if obj.type != 'MESH' or not obj.data:
-                continue
-
-            # Get LOD level from object name
-            lod_level = extract_lod_from_object_name(obj.name)
-
-            if lod_level < target_lod:
-                # Delete this object
-                objects_to_delete.append(obj)
-            else:
-                # Rename this object
-                objects_to_rename.append((obj, lod_level))
 
         # Step 2: Delete lower LODs
         print(f"  🗑️  Deleting {len(objects_to_delete)} object(s) from LOD levels below LOD{target_lod}")
@@ -2026,19 +2908,20 @@ class ImportToolbar:
         # Step 1: Find which materials are currently in use by imported objects
         materials_in_use = set()
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
+
+                # Collect all materials used by this object
+                for mat_slot in obj.data.materials:
+                    if mat_slot:
+                        materials_in_use.add(mat_slot.name)
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
                 continue
 
-            # Collect all materials used by this object
-            for mat_slot in obj.data.materials:
-                if mat_slot:
-                    materials_in_use.add(mat_slot.name)
-
-        print(f"  📋 Materials in use: {len(materials_in_use)}")
-        for mat_name in materials_in_use:
-            print(f"    - {mat_name}")
+        # Material tracking prints removed to reduce console clutter
 
         # Step 2: Remove materials that were imported but are no longer in use
         removed_count = 0
@@ -2054,17 +2937,13 @@ class ImportToolbar:
                 if mat_name not in materials_in_use:
                     bpy.data.materials.remove(mat, do_unlink=True)
                     removed_count += 1
-                    print(f"    🗑️  Removed unused material: {mat_name}")
+                    # Print removed to reduce console clutter
             except ReferenceError:
                 # Material already deleted, skip
                 pass
             except Exception as e:
-                # For other errors, try to get name safely
-                try:
-                    error_name = mat.name
-                except:
-                    error_name = "<deleted>"
-                print(f"    ⚠️  Could not remove material '{error_name}': {e}")
+                # Print removed to reduce console clutter
+                pass
 
         # Step 3: Also check for materials created during import (not just tracked ones)
         for mat_name in list(bpy.data.materials.keys()):
@@ -2084,18 +2963,15 @@ class ImportToolbar:
                 if current_mat_name not in materials_in_use:
                     bpy.data.materials.remove(mat, do_unlink=True)
                     removed_count += 1
-                    print(f"    🗑️  Removed unused material: {current_mat_name}")
+                    # Print removed to reduce console clutter
             except ReferenceError:
                 # Material already deleted, skip
                 pass
             except Exception as e:
-                # For other errors, use the mat_name from the loop
-                print(f"    ⚠️  Could not remove material '{mat_name}': {e}")
+                # Print removed to reduce console clutter
+                pass
 
-        if removed_count > 0:
-            print(f"  ✅ Removed {removed_count} unused material(s)")
-        else:
-            print(f"  ℹ️  No unused materials to remove")
+        # Cleanup summary prints removed to reduce console clutter
 
     def _show_only_lowest_lod(self):
         """Show all LOD levels in viewport after accepting import."""
@@ -2105,40 +2981,54 @@ class ImportToolbar:
         # Find all LOD levels in imported objects
         lod_levels = set()
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
-                continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
 
-            lod_level = extract_lod_from_object_name(obj.name)
-            lod_levels.add(lod_level)
+                lod_level = extract_lod_from_object_name(obj.name)
+                lod_levels.add(lod_level)
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
+                continue
 
         if not lod_levels:
-            print(f"  ℹ️  No LOD levels found")
+            # Print removed to reduce console clutter
             return
 
-        print(f"  📊 Available LOD levels: {sorted(lod_levels)}")
-        print(f"  👁️ Showing all LOD levels")
+        # Visibility prints removed to reduce console clutter
 
         # Show all LODs using the eye icon
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
+
+                lod_level = extract_lod_from_object_name(obj.name)
+
+                # Show all LODs using eye icon (hide_set) - instant local visibility
+                obj.hide_set(False)
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
                 continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
 
-            lod_level = extract_lod_from_object_name(obj.name)
-
-            # Show all LODs using the eye icon (hide_viewport)
-            # Also ensure the monitor/display icon is NOT hiding the object (hide_set)
-            obj.hide_viewport = False  # Eye icon - visible
-            obj.hide_set(False)  # Monitor icon - enabled in viewport
-
-        print(f"  ✅ Visibility set: All {len(lod_levels)} LOD level(s) visible")
+        # Print removed to reduce console clutter
 
     def _handle_cancel(self, button):
         """Handle Cancel button click."""
+        import bpy
         print("Cancelling Import - Cleaning up...")
+
+        # Cancel any pending LOD timer
+        if self.pending_lod_timer is not None:
+            if bpy.app.timers.is_registered(self.pending_lod_timer):
+                bpy.app.timers.unregister(self.pending_lod_timer)
+            self.pending_lod_timer = None
+            self.target_lod = None
+            self.lod_loading_state = False
+            if self.lod_slider:
+                self.lod_slider.set_loading_state(False)
 
         # Disable wireframe mode if it was enabled
         if self.wireframe_enabled:
@@ -2229,11 +3119,35 @@ class ImportToolbar:
             original_scene: Optional reference to original scene
             temp_scene: Optional reference to temporary preview scene
         """
+        import bpy
+        from ..operations.asset_processor import extract_lod_from_object_name
+
         self.imported_objects = objects
         self.imported_materials = materials
         self.materials_before_import = materials_before
         self.original_scene = original_scene
         self.temp_scene = temp_scene
+
+        # OPTIMIZED: Extract attach roots from imported objects
+        # Attach roots already have LOD organization built in during import!
+        # No need to loop through objects or reorganize anything
+        self.attach_roots = []
+        for obj in objects:
+            try:
+                # Validate object reference before accessing properties
+                if obj is None:
+                    continue
+                if obj.name not in bpy.data.objects:
+                    continue
+                if bpy.data.objects[obj.name] != obj:
+                    continue
+                if obj.get("ioiAttachRootNode"):
+                    self.attach_roots.append(obj)
+            except (ReferenceError, AttributeError, KeyError):
+                # Object reference is invalid, skip it
+                continue
+
+        # Attach root summary prints removed to reduce console clutter
 
     def set_lod_levels(self, lod_levels):
         """Set available LOD levels and update dropdown.
@@ -2247,8 +3161,7 @@ class ImportToolbar:
             self.min_lod_dropdown.set_items(items)
             # Set callback for when dropdown selection changes
             self.min_lod_dropdown.on_change = self._on_lod_selection_changed
-            print(f"  🔽 Min LOD dropdown populated with {len(items)} LOD levels: {items}")
-            print(f"     ℹ️  Click the dropdown to see all available LOD levels")
+            # Dropdown population prints removed to reduce console clutter
             # Default to lowest LOD
             self.selected_lod_level = self.lod_levels[0] if self.lod_levels else 0
 
@@ -2260,7 +3173,7 @@ class ImportToolbar:
             self.lod_slider.set_value(lowest_lod)
             self.current_preview_lod = lowest_lod
             self.lod_slider_label_text = f"LOD{lowest_lod}"
-            print(f"  🎚️  LOD slider initialized with {len(self.lod_levels)} LOD level(s), starting at LOD{lowest_lod}")
+            # Slider initialization print removed to reduce console clutter
 
             # Initialize min/max markers on slider
             self._update_slider_minmax_markers()
@@ -2321,23 +3234,22 @@ class ImportToolbar:
                         name_match = re.search(r'LOD(\d+)', text_obj.name)
                         lod_level = int(name_match.group(1)) if name_match else 0
 
-                    # Check if object still exists
-                    if text_obj and text_obj.name in bpy.data.objects:
-                        text_data = text_obj.data
-                        # Clear existing materials
-                        text_data.materials.clear()
+                    # Quick validity check without expensive name lookup
+                    text_data = text_obj.data
+                    # Clear existing materials
+                    text_data.materials.clear()
 
-                        # Apply new color based on LOD hierarchy
-                        # Selected = Blue, Below selected (lower numbers) = Black, Above selected (higher numbers) = White
-                        if lod_level == selected_lod:
-                            # Vibrant blue for selected
-                            text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (0.1, 0.4, 1.0, 1.0)))
-                        elif lod_level < selected_lod:
-                            # Almost black for LODs with lower numbers (worse quality)
-                            text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
-                        else:
-                            # Almost white for LODs with higher numbers (better quality)
-                            text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
+                    # Apply new color based on LOD hierarchy
+                    # Selected = Blue, Below selected (lower numbers) = Black, Above selected (higher numbers) = White
+                    if lod_level == selected_lod:
+                        # Vibrant blue for selected
+                        text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (0.1, 0.4, 1.0, 1.0)))
+                    elif lod_level < selected_lod:
+                        # Almost black for LODs with lower numbers (worse quality)
+                        text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
+                    else:
+                        # Almost white for LODs with higher numbers (better quality)
+                        text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
                 except:
                     pass
 
@@ -2352,40 +3264,41 @@ class ImportToolbar:
         import bpy
         from ..operations.asset_processor import extract_lod_from_object_name
 
-        print(f"\n{'='*80}")
-        print(f"📐 POSITIONING LODs FOR PREVIEW")
-        print(f"{'='*80}")
+        # Header prints removed to reduce console clutter
 
         # Group objects by attach root (variation), then by LOD level
         # This ensures each variation's LODs are positioned independently
         variations = {}
         for obj in self.imported_objects:
-            if not obj or obj.name not in bpy.data.objects:
+            try:
+                # Quick validity check without expensive name lookup
+                if obj.type != 'MESH' or not obj.data:
+                    continue
+
+                # Get the attach root (parent) of this object
+                parent = obj.parent
+                parent_name = parent.name if parent else "no_parent"
+
+                # Initialize this variation if not seen before
+                if parent_name not in variations:
+                    variations[parent_name] = {}
+
+                # Group by LOD level within this variation
+                lod_level = extract_lod_from_object_name(obj.name)
+                if lod_level not in variations[parent_name]:
+                    variations[parent_name][lod_level] = []
+                variations[parent_name][lod_level].append(obj)
+            except (AttributeError, ReferenceError):
+                # Object was deleted or is invalid
                 continue
-            if obj.type != 'MESH' or not obj.data:
-                continue
 
-            # Get the attach root (parent) of this object
-            parent = obj.parent
-            parent_name = parent.name if parent else "no_parent"
-
-            # Initialize this variation if not seen before
-            if parent_name not in variations:
-                variations[parent_name] = {}
-
-            # Group by LOD level within this variation
-            lod_level = extract_lod_from_object_name(obj.name)
-            if lod_level not in variations[parent_name]:
-                variations[parent_name][lod_level] = []
-            variations[parent_name][lod_level].append(obj)
-
-        print(f"  📊 Found {len(variations)} variation(s) with LOD levels")
+        # Variation count print removed to reduce console clutter
 
         # Process each variation independently
         for variation_name in sorted(variations.keys()):
             lods_by_level = variations[variation_name]
 
-            print(f"\n  📦 Processing variation: {variation_name}")
+            # Processing variation print removed to reduce console clutter
 
             for lod_level in sorted(lods_by_level.keys()):
                 objects = lods_by_level[lod_level]
@@ -2440,7 +3353,7 @@ class ImportToolbar:
                 center_y = (min_y + max_y) / 2.0 if min_y is not None else 0.0
 
                 # Don't move objects - they stay at their original positions
-                print(f"    📍 LOD{lod_level}: {len(objects)} object(s), {total_tris:,} tris at original position")
+                # LOD position print removed to reduce console clutter
 
                 # Create text object showing LOD level and polycount
                 text_data = bpy.data.curves.new(name=f"{variation_name}_LOD{lod_level}_Label", type='FONT')
@@ -2490,12 +3403,12 @@ class ImportToolbar:
                 # Store text object for later cleanup (with LOD level info)
                 self.lod_text_objects.append((text_obj, lod_level))
 
-                print(f"    ✅ Created label '{text_obj.name}' (size: {text_size:.2f}m)")
+                # Label creation print removed to reduce console clutter
 
-        print(f"✅ Positioned {len(variations)} variation(s) with LOD levels for preview")
+        # Positioning summary print removed to reduce console clutter
 
         # Initialize visibility: show only LOD0 by default
-        print(f"\n  👁️  Initializing LOD visibility (showing LOD{self.current_preview_lod} only)")
+        # Visibility initialization print removed to reduce console clutter
         self.update_lod_visibility()
 
     def _get_or_create_text_material(self, mat_name, color):
@@ -2541,17 +3454,16 @@ class ImportToolbar:
                 # Handle both tuple (text_obj, lod_level) and just text_obj
                 text_obj = item[0] if isinstance(item, tuple) else item
 
-                if text_obj and text_obj.name in bpy.data.objects:
-                    bpy.data.objects.remove(text_obj, do_unlink=True)
-                    deleted_count += 1
-            except ReferenceError:
-                # Text object already deleted, skip it
+                # Quick validity check without expensive name lookup
+                bpy.data.objects.remove(text_obj, do_unlink=True)
+                deleted_count += 1
+            except (ReferenceError, AttributeError):
+                # Text object already deleted or invalid, skip it
                 pass
             except Exception as e:
                 print(f"  ⚠️  Error deleting text object: {e}")
 
-        if deleted_count > 0:
-            print(f"  🗑️  Deleted {deleted_count} text label(s)")
+        # Print removed to reduce console clutter
 
         # Clear the list
         self.lod_text_objects.clear()
@@ -2560,31 +3472,26 @@ class ImportToolbar:
         """Reset LOD positions to original and delete text labels."""
         import bpy
 
-        print(f"\n{'='*80}")
-        print(f"🔄 RESETTING LOD POSITIONS AND CLEANING UP LABELS")
-        print(f"{'='*80}")
+        # Header prints removed to reduce console clutter
 
         # Reset object positions
         reset_count = 0
         for obj in self.imported_objects:
             try:
-                # Check if object still exists
-                if not obj or obj.name not in bpy.data.objects:
-                    continue
-
+                # Quick validity check without expensive name lookup
                 # Restore original position if we stored it
                 if obj.name in self.lod_original_positions:
                     original_pos = self.lod_original_positions[obj.name]
                     obj.location = original_pos.copy()
                     reset_count += 1
-            except ReferenceError:
-                # Object has been deleted, skip it
+            except (ReferenceError, AttributeError):
+                # Object has been deleted or is invalid, skip it
                 pass
             except Exception as e:
-                print(f"  ⚠️  Error resetting object position: {e}")
+                # Print removed to reduce console clutter
+                pass
 
-        if reset_count > 0:
-            print(f"  ✅ Reset {reset_count} object(s) to original positions")
+        # Print removed to reduce console clutter
 
         # Delete text objects using helper method
         self._delete_text_labels()
@@ -2592,7 +3499,7 @@ class ImportToolbar:
         # Clear the tracking dictionary
         self.lod_original_positions.clear()
 
-        print(f"✅ LOD preview cleanup complete")
+        # Print removed to reduce console clutter
 
     def draw(self):
         """Draw all toolbar elements."""
@@ -2744,13 +3651,22 @@ class ImportToolbar:
         return False
 
     def handle_mouse_move(self, x, y):
-        """Handle mouse move events for hover effects."""
+        """Handle mouse move events for hover effects.
+        
+        Returns:
+            bool: True if dragging (should consume event), False otherwise
+        """
         if not self.visible:
-            return
+            return False
 
         # Handle top toolbar hover/drag states
+        is_dragging = False
         if self.lod_slider:
             self.lod_slider.mouse_move(x, y)
+            # Check if slider is currently dragging
+            if hasattr(self.lod_slider, '_is_dragging'):
+                is_dragging = self.lod_slider._is_dragging
+        
         if self.wireframe_toggle:
             self.wireframe_toggle.mouse_move(x, y)
 
@@ -2765,3 +3681,5 @@ class ImportToolbar:
             self.accept_button.mouse_move(x, y)
         if self.cancel_button:
             self.cancel_button.mouse_move(x, y)
+        
+        return is_dragging
