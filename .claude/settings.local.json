@@ -11,7 +11,8 @@
       "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" status)",
       "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" diff)",
       "Bash(dir:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" add .)"
     ],
     "deny": [],
     "ask": []

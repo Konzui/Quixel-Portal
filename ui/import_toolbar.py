@@ -1838,6 +1838,482 @@ class BL_UI_ToggleButton(BL_UI_Widget):
         self._is_hovered = self.is_in_rect(x, y)
 
 
+class BL_UI_DropdownButton(BL_UI_Widget):
+    """Narrow dropdown button widget (16px wide, 32px tall)."""
+
+    def __init__(self, x, y, width, height):
+        super().__init__(x, y, width, height)
+        self._icon_path = None
+        self._icon_image = None
+        self._icon_texture = None
+        self._bg_color = (0.137, 0.137, 0.137, 1.0)  # #232323
+        self._hover_bg_color = (0.475, 0.475, 0.475, 1.0)  # #797979
+        self._is_hovered = False
+        self.on_click = None
+
+    @property
+    def icon_path(self):
+        return self._icon_path
+
+    @icon_path.setter
+    def icon_path(self, value):
+        self._icon_path = value
+        if value:
+            self._load_icon_image()
+
+    def _load_icon_image(self):
+        """Load icon image and create GPU texture."""
+        if not self._icon_path:
+            return
+
+        icon_path = Path(self._icon_path)
+
+        if not icon_path.exists():
+            print(f"⚠️ Dropdown icon not found at: {icon_path}")
+            return
+
+        try:
+            self._icon_image = bpy.data.images.load(str(icon_path))
+            self._icon_texture = gpu.texture.from_image(self._icon_image)
+        except Exception as e:
+            print(f"⚠️ Failed to load dropdown icon: {e}")
+            self._icon_image = None
+            self._icon_texture = None
+
+    def init(self, context):
+        """Initialize widget and load icon if path is set."""
+        super().init(context)
+        if self._icon_path:
+            self._load_icon_image()
+
+    def draw(self):
+        """Draw the dropdown button."""
+        if not self.visible:
+            return
+
+        # Determine background color
+        bg_color = self._hover_bg_color if self._is_hovered else self._bg_color
+
+        # Draw background
+        draw_rounded_rect(
+            self.x_screen,
+            self.y_screen,
+            self.width,
+            self.height,
+            2,  # 2px corner radius
+            bg_color,
+            segments=8
+        )
+
+        # Draw icon if available
+        if self._icon_texture:
+            self._draw_icon_image()
+
+    def _draw_icon_image(self):
+        """Draw the icon image centered in the button."""
+        if not self._icon_texture:
+            return
+
+        # Calculate icon size (leave some padding)
+        padding = 4
+        icon_width = self.width - (padding * 2)
+        icon_height = min(self.height - (padding * 2), icon_width)  # Keep aspect ratio
+        icon_x = self.x_screen + (self.width - icon_width) / 2
+        icon_y = self.y_screen + (self.height - icon_height) / 2
+
+        # Use IMAGE shader to draw the texture
+        gpu.state.blend_set('ALPHA')
+
+        try:
+            shader = gpu.shader.from_builtin('IMAGE')
+        except:
+            gpu.state.blend_set('NONE')
+            return
+
+        # Create batch for image quad
+        vertices = [
+            (icon_x, icon_y),
+            (icon_x + icon_width, icon_y),
+            (icon_x + icon_width, icon_y + icon_height),
+            (icon_x, icon_y + icon_height)
+        ]
+
+        texcoords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        indices = [(0, 1, 2), (0, 2, 3)]
+
+        batch = batch_for_shader(
+            shader, 'TRIS',
+            {"pos": vertices, "texCoord": texcoords},
+            indices=indices
+        )
+
+        shader.bind()
+        shader.uniform_sampler("image", self._icon_texture)
+        batch.draw(shader)
+
+        gpu.state.blend_set('NONE')
+
+    def mouse_down(self, x, y):
+        """Handle mouse down event."""
+        if self.is_in_rect(x, y):
+            return True
+        return False
+
+    def mouse_up(self, x, y):
+        """Handle mouse up event."""
+        if self.is_in_rect(x, y):
+            if self.on_click:
+                self.on_click()
+            return True
+        return False
+
+    def mouse_move(self, x, y):
+        """Handle mouse move event for hover state."""
+        self._is_hovered = self.is_in_rect(x, y)
+
+
+class BL_UI_HDRIThumbnailButton(BL_UI_Widget):
+    """HDRI thumbnail button widget (128x128px)."""
+
+    def __init__(self, x, y, size, thumbnail_path, exr_path, hdri_name):
+        super().__init__(x, y, size, size)
+        self.thumbnail_path = thumbnail_path
+        self.exr_path = exr_path
+        self.hdri_name = hdri_name
+        self._thumbnail_image = None
+        self._thumbnail_texture = None
+        self._is_hovered = False
+        self._is_selected = False
+        self._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d
+        self._hover_color = (0.2, 0.2, 0.2, 1.0)
+        self._selected_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8
+        self.on_select = None
+
+    def _load_thumbnail(self):
+        """Load thumbnail image and create GPU texture."""
+        if not self.thumbnail_path:
+            return
+
+        thumb_path = Path(self.thumbnail_path)
+
+        if not thumb_path.exists():
+            print(f"⚠️ HDRI thumbnail not found at: {thumb_path}")
+            return
+
+        try:
+            self._thumbnail_image = bpy.data.images.load(str(thumb_path))
+            self._thumbnail_texture = gpu.texture.from_image(self._thumbnail_image)
+        except Exception as e:
+            print(f"⚠️ Failed to load HDRI thumbnail: {e}")
+            self._thumbnail_image = None
+            self._thumbnail_texture = None
+
+    def init(self, context):
+        """Initialize widget and load thumbnail."""
+        super().init(context)
+        self._load_thumbnail()
+
+    @property
+    def is_selected(self):
+        return self._is_selected
+
+    @is_selected.setter
+    def is_selected(self, value):
+        self._is_selected = value
+
+    def draw(self):
+        """Draw the HDRI thumbnail button."""
+        if not self.visible:
+            return
+
+        # Determine border color
+        if self._is_selected:
+            border_color = self._selected_color
+            border_width = 2
+        elif self._is_hovered:
+            border_color = self._hover_color
+            border_width = 2
+        else:
+            border_color = None
+            border_width = 0
+
+        # Draw background
+        draw_rounded_rect(
+            self.x_screen,
+            self.y_screen,
+            self.width,
+            self.height,
+            18,  # 18px corner radius
+            self._bg_color,
+            segments=16
+        )
+
+        # Draw thumbnail image
+        if self._thumbnail_texture:
+            self._draw_thumbnail_image()
+
+        # Draw border if needed
+        if border_color and border_width > 0:
+            self._draw_border(border_color, border_width)
+
+    def _draw_thumbnail_image(self):
+        """Draw the thumbnail image."""
+        if not self._thumbnail_texture:
+            return
+
+        # Image fills entire button with small padding
+        padding = 4
+        img_width = self.width - (padding * 2)
+        img_height = self.height - (padding * 2)
+        img_x = self.x_screen + padding
+        img_y = self.y_screen + padding
+
+        gpu.state.blend_set('ALPHA')
+
+        try:
+            shader = gpu.shader.from_builtin('IMAGE')
+        except:
+            gpu.state.blend_set('NONE')
+            return
+
+        # Create batch for image quad
+        vertices = [
+            (img_x, img_y),
+            (img_x + img_width, img_y),
+            (img_x + img_width, img_y + img_height),
+            (img_x, img_y + img_height)
+        ]
+
+        texcoords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        indices = [(0, 1, 2), (0, 2, 3)]
+
+        batch = batch_for_shader(
+            shader, 'TRIS',
+            {"pos": vertices, "texCoord": texcoords},
+            indices=indices
+        )
+
+        shader.bind()
+        shader.uniform_sampler("image", self._thumbnail_texture)
+        batch.draw(shader)
+
+        gpu.state.blend_set('NONE')
+
+    def _draw_border(self, color, width):
+        """Draw border around the thumbnail."""
+        DrawConstants.initialize()
+        gpu.state.blend_set('ALPHA')
+        gpu.state.line_width_set(width)
+
+        shader = DrawConstants.uniform_shader
+
+        # Create rounded rectangle outline
+        radius = 18
+        x, y = self.x_screen, self.y_screen
+        w, h = self.width, self.height
+
+        vertices = []
+        segments = 16
+
+        # Bottom edge
+        vertices.append((x + radius, y))
+        vertices.append((x + w - radius, y))
+        # Bottom-right corner
+        cx, cy = x + w - radius, y + radius
+        for i in range(segments + 1):
+            angle = 1.5 * math.pi + (0.5 * math.pi * i / segments)
+            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        # Right edge
+        vertices.append((x + w, y + h - radius))
+        # Top-right corner
+        cx, cy = x + w - radius, y + h - radius
+        for i in range(segments + 1):
+            angle = 0 + (0.5 * math.pi * i / segments)
+            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        # Top edge
+        vertices.append((x + w - radius, y + h))
+        vertices.append((x + radius, y + h))
+        # Top-left corner
+        cx, cy = x + radius, y + h - radius
+        for i in range(segments + 1):
+            angle = 0.5 * math.pi + (0.5 * math.pi * i / segments)
+            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        # Left edge
+        vertices.append((x, y + h - radius))
+        vertices.append((x, y + radius))
+        # Bottom-left corner
+        cx, cy = x + radius, y + radius
+        for i in range(segments + 1):
+            angle = math.pi + (0.5 * math.pi * i / segments)
+            vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+
+        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": vertices})
+        shader.bind()
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+
+        gpu.state.line_width_set(1.0)
+        gpu.state.blend_set('NONE')
+
+    def mouse_down(self, x, y):
+        """Handle mouse down event."""
+        if self.is_in_rect(x, y):
+            return True
+        return False
+
+    def mouse_up(self, x, y):
+        """Handle mouse up event."""
+        if self.is_in_rect(x, y):
+            if self.on_select:
+                self.on_select(self.exr_path, self.hdri_name)
+            return True
+        return False
+
+    def mouse_move(self, x, y):
+        """Handle mouse move event for hover state."""
+        self._is_hovered = self.is_in_rect(x, y)
+
+
+class BL_UI_HDRIPanel(BL_UI_Widget):
+    """HDRI selection panel with thumbnail grid."""
+
+    def __init__(self, x, y, available_hdris):
+        self.available_hdris = available_hdris
+        self.thumbnail_buttons = []
+
+        # Calculate panel dimensions
+        thumbnail_size = 128
+        thumbnail_spacing = 8
+        panel_padding = 12
+
+        # Calculate grid layout (8 thumbnails in a single row)
+        thumbnails_per_row = 8
+        num_rows = 1
+
+        panel_width = (thumbnail_size * thumbnails_per_row +
+                      thumbnail_spacing * (thumbnails_per_row - 1) +
+                      panel_padding * 2)
+        panel_height = (thumbnail_size * num_rows +
+                       thumbnail_spacing * (num_rows - 1) +
+                       panel_padding * 2)
+
+        super().__init__(x, y, panel_width, panel_height)
+
+        self._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d
+        self.on_hdri_selected = None
+        self.selected_hdri_path = None
+
+        # Create thumbnail buttons
+        for idx, (thumb_path, exr_path, hdri_name) in enumerate(available_hdris):
+            row = idx // thumbnails_per_row
+            col = idx % thumbnails_per_row
+
+            btn_x = x + panel_padding + col * (thumbnail_size + thumbnail_spacing)
+            btn_y = y + panel_padding + row * (thumbnail_size + thumbnail_spacing)
+
+            btn = BL_UI_HDRIThumbnailButton(btn_x, btn_y, thumbnail_size,
+                                           thumb_path, exr_path, hdri_name)
+            btn.on_select = self._handle_thumbnail_select
+            self.thumbnail_buttons.append(btn)
+
+    def init(self, context):
+        """Initialize panel and all thumbnail buttons."""
+        super().init(context)
+        for btn in self.thumbnail_buttons:
+            btn.init(context)
+
+    def _handle_thumbnail_select(self, exr_path, hdri_name):
+        """Handle thumbnail selection."""
+        self.selected_hdri_path = exr_path
+
+        # Update selected state for all buttons
+        for btn in self.thumbnail_buttons:
+            btn.is_selected = (btn.exr_path == exr_path)
+
+        # Call parent callback
+        if self.on_hdri_selected:
+            self.on_hdri_selected(exr_path, hdri_name)
+
+    def draw(self):
+        """Draw the HDRI panel."""
+        if not self.visible:
+            return
+
+        # Draw background panel
+        draw_rounded_rect(
+            self.x_screen,
+            self.y_screen,
+            self.width,
+            self.height,
+            16,  # 16px corner radius
+            self._bg_color,
+            segments=16
+        )
+
+        # Draw all thumbnail buttons
+        for btn in self.thumbnail_buttons:
+            btn.draw()
+
+    def mouse_down(self, x, y):
+        """Handle mouse down events."""
+        # Check if click is within panel bounds
+        if not self.is_in_rect(x, y):
+            return False
+
+        # Check thumbnail buttons
+        for btn in self.thumbnail_buttons:
+            if btn.mouse_down(x, y):
+                return True
+
+        # Click was on panel background (consume event)
+        return True
+
+    def mouse_up(self, x, y):
+        """Handle mouse up events."""
+        if not self.is_in_rect(x, y):
+            return False
+
+        for btn in self.thumbnail_buttons:
+            if btn.mouse_up(x, y):
+                return True
+
+        return True
+
+    def mouse_move(self, x, y):
+        """Handle mouse move events."""
+        if not self.visible:
+            return
+
+        for btn in self.thumbnail_buttons:
+            btn.mouse_move(x, y)
+
+    def update_position(self, x, y):
+        """Update panel position and reposition all thumbnails."""
+        # Update panel position (including screen coordinates)
+        self.x = x
+        self.y = y
+        self.x_screen = x
+        self.y_screen = y
+
+        # Recalculate thumbnail positions
+        thumbnail_size = 128
+        thumbnail_spacing = 8
+        panel_padding = 12
+        thumbnails_per_row = 8  # Single row with 8 thumbnails
+
+        for idx, btn in enumerate(self.thumbnail_buttons):
+            row = idx // thumbnails_per_row
+            col = idx % thumbnails_per_row
+
+            btn_x = x + panel_padding + col * (thumbnail_size + thumbnail_spacing)
+            btn_y = y + panel_padding + row * (thumbnail_size + thumbnail_spacing)
+
+            btn.x = btn_x
+            btn.y = btn_y
+            btn.x_screen = btn_x
+            btn.y_screen = btn_y
+
+
 class BL_UI_Slider(BL_UI_Widget):
     """Slider widget with discrete LOD markers (LOD0-LOD7)."""
 
@@ -2215,6 +2691,26 @@ class ImportToolbar:
         self.show_all_checkbox = None
         self.wireframe_toggle = None
 
+        # HDRI widgets
+        self.hdri_toggle = None           # Main HDRI toggle button
+        self.hdri_dropdown_button = None  # Dropdown arrow button
+        self.hdri_panel = None            # Popup panel with thumbnails
+        self.hdri_enabled = False         # HDRI viewport shading state
+        self.hdri_panel_visible = False   # Panel visibility state
+        self.current_hdri = None          # Currently selected HDRI path
+        self.available_hdris = []         # List of available HDRIs
+        self.previous_shading_type = None # Store previous shading mode before enabling HDRI
+        self.previous_use_scene_world = None  # Store previous use_scene_world state
+        self.original_world_nodes = None  # Store original world node setup
+
+        # Store original render settings for restoration
+        self.previous_render_engine = None
+        self.previous_use_raytracing = None
+        self.previous_ray_tracing_method = None
+        self.previous_ray_tracing_resolution = None
+        self.previous_fast_gi = None
+        self.previous_use_shadows = None
+
         self.visible = False
 
         # Store imported data for cleanup
@@ -2255,9 +2751,59 @@ class ImportToolbar:
         self.on_accept = None
         self.on_cancel = None
 
+    def _scan_hdri_assets(self):
+        """Scan assets/img folder for HDRI files.
+
+        Returns list of tuples: (thumbnail_path, exr_path, hdri_name)
+        """
+        addon_dir = Path(__file__).parent.parent
+        hdri_dir = addon_dir / "assets" / "img"
+
+        if not hdri_dir.exists():
+            print(f"⚠️ HDRI directory not found: {hdri_dir}")
+            return []
+
+        hdri_list = []
+
+        # Scan for PNG files (thumbnails)
+        for png_file in hdri_dir.glob("*.png"):
+            # Get corresponding EXR file
+            exr_file = png_file.with_suffix(".exr")
+
+            if exr_file.exists():
+                hdri_name = png_file.stem  # Filename without extension
+                hdri_list.append((str(png_file), str(exr_file), hdri_name))
+            else:
+                print(f"⚠️ Missing EXR file for thumbnail: {png_file.name}")
+
+        # Sort by name, but put default HDRI first
+        default_hdri_name = "kloofendal_48d_partly_cloudy_puresky_1k"
+
+        def sort_key(item):
+            # Return 0 for default HDRI to put it first, otherwise use name
+            if item[2] == default_hdri_name:
+                return (0, "")
+            else:
+                return (1, item[2])
+
+        hdri_list.sort(key=sort_key)
+
+        print(f"  🌅  Found {len(hdri_list)} HDRI assets")
+        return hdri_list
+
     def init(self, context):
         """Initialize toolbar with buttons."""
+        import bpy
+
         area = context.area
+
+        # Backup the original world state BEFORE any modifications
+        # This ensures we capture Blender's default state, not a modified one
+        if self.original_world_nodes is None:
+            world = bpy.context.scene.world
+            if world:
+                self.original_world_nodes = self._backup_world_nodes(world)
+                print("  🌅  Backed up original world state")
 
         # Dimensions from spec
         button_width = 100  # Reduced from 120
@@ -2379,19 +2925,23 @@ class ImportToolbar:
         toolbar_gap = 8  # Gap between bottom and top toolbar
         top_panel_y = panel_y + panel_height + toolbar_gap
 
-        # Top toolbar dimensions (label + slider + divider + wireframe button)
+        # Top toolbar dimensions (label + slider + divider + wireframe button + HDRI buttons)
         lod_label_width = 60  # Width for "LOD0", "LOD1", etc.
         label_to_slider_gap = 2
         slider_width = 240
         slider_to_divider_gap = 8
         divider_spacing = 16  # Space for divider line
         wireframe_button_size = button_height  # Square button
+        hdri_button_gap = 4  # Gap between wireframe and HDRI
+        hdri_button_size = button_height  # Square HDRI button (same as wireframe)
+        hdri_dropdown_width = 16  # Dropdown arrow width
+        hdri_total_width = hdri_button_size + hdri_dropdown_width
         top_right_padding = 8
 
         # Calculate top toolbar width
         top_content_width = (lod_label_width + label_to_slider_gap + slider_width +
                             slider_to_divider_gap + divider_spacing + wireframe_button_size +
-                            top_right_padding)
+                            hdri_button_gap + hdri_total_width + top_right_padding)
         top_panel_width = top_content_width + panel_padding * 2
         top_panel_x = (area.width - top_panel_width) / 2
 
@@ -2436,6 +2986,45 @@ class ImportToolbar:
             self.wireframe_toggle.icon_text = "W"
         self.wireframe_toggle.on_toggle = self._handle_wireframe_toggle
         self.wireframe_toggle.init(context)
+
+        # ========================================
+        # HDRI BUTTONS (next to wireframe)
+        # ========================================
+        # Scan available HDRIs
+        self.available_hdris = self._scan_hdri_assets()
+
+        # Position after wireframe button
+        hdri_button_x = wireframe_x + wireframe_button_size + hdri_button_gap
+
+        # Create HDRI toggle button
+        self.hdri_toggle = BL_UI_ToggleButton(hdri_button_x, top_widget_y, hdri_button_size)
+        hdri_icon_path = addon_dir / "assets" / "icons" / "hdri_32.png"
+        if hdri_icon_path.exists():
+            self.hdri_toggle.icon_path = str(hdri_icon_path)
+        else:
+            self.hdri_toggle.icon_text = "H"
+        self.hdri_toggle.on_toggle = self._handle_hdri_toggle
+        self.hdri_toggle.init(context)
+
+        # Create dropdown button (attached to right side of HDRI button)
+        dropdown_x = hdri_button_x + hdri_button_size
+        self.hdri_dropdown_button = BL_UI_DropdownButton(dropdown_x, top_widget_y,
+                                                          hdri_dropdown_width, button_height)
+        dropdown_icon_path = addon_dir / "assets" / "icons" / "dropdown_2_16.png"
+        if dropdown_icon_path.exists():
+            self.hdri_dropdown_button.icon_path = str(dropdown_icon_path)
+        self.hdri_dropdown_button.on_click = self._handle_hdri_dropdown_click
+        self.hdri_dropdown_button.init(context)
+
+        # Create HDRI panel (initially hidden, position will be set when opened)
+        if self.available_hdris:
+            # Initial position (will be updated when panel is shown)
+            hdri_panel_x = 0
+            hdri_panel_y = 0
+            self.hdri_panel = BL_UI_HDRIPanel(hdri_panel_x, hdri_panel_y, self.available_hdris)
+            self.hdri_panel.visible = False
+            self.hdri_panel.on_hdri_selected = self._handle_hdri_selected
+            self.hdri_panel.init(context)
 
         self.visible = True
 
@@ -2542,7 +3131,7 @@ class ImportToolbar:
 
         # Reset toggle button visual state if it exists
         if self.wireframe_toggle:
-            self.wireframe_toggle.is_toggled = False
+            self.wireframe_toggle._toggled = False
 
         # Force viewport update
         for area in bpy.context.screen.areas:
@@ -2550,6 +3139,398 @@ class ImportToolbar:
                 area.tag_redraw()
 
         print("  🔲  Wireframe disabled")
+
+    def _handle_hdri_toggle(self, toggled):
+        """Handle HDRI toggle button - enables/disables viewport shading."""
+        import bpy
+        self.hdri_enabled = toggled
+        print(f"  🌅  HDRI viewport shading {'enabled' if toggled else 'disabled'}")
+
+        if toggled:
+            # Load default HDRI if this is the first time enabling and no HDRI is set
+            if not self.current_hdri:
+                # Find the default HDRI
+                default_hdri_name = "kloofendal_48d_partly_cloudy_puresky_1k"
+                for thumb_path, exr_path, hdri_name in self.available_hdris:
+                    if hdri_name == default_hdri_name:
+                        self.current_hdri = exr_path
+                        self._setup_hdri_background(exr_path)
+                        print(f"  🌅  Loaded default HDRI: {hdri_name}")
+                        # Update panel selection if it exists
+                        if self.hdri_panel:
+                            for btn in self.hdri_panel.thumbnail_buttons:
+                                btn.is_selected = (btn.exr_path == exr_path)
+                        break
+            else:
+                # Re-enable with previously selected HDRI
+                self._setup_hdri_background(self.current_hdri)
+                print(f"  🌅  Re-enabled HDRI: {Path(self.current_hdri).stem}")
+        else:
+            # When disabling, restore original world setup
+            self._restore_world_background()
+
+        # Set viewport shading mode
+        self._set_viewport_shading(toggled)
+
+    def _handle_hdri_dropdown_click(self):
+        """Handle HDRI dropdown button click - show/hide HDRI panel."""
+        import bpy
+
+        # Toggle panel visibility
+        self.hdri_panel_visible = not self.hdri_panel_visible
+
+        if self.hdri_panel_visible and self.hdri_panel:
+            # Calculate panel position (centered above top toolbar)
+            # Get current area dimensions
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        # Position panel 16px above the top toolbar and centered horizontally
+                        panel_gap = 16
+                        if self.top_background_panel:
+                            # Center horizontally (same as other toolbars)
+                            panel_x = (area.width - self.hdri_panel.width) / 2
+                            # Position above top toolbar - use x, y properties which are in screen coordinates
+                            panel_y = (self.top_background_panel.y_screen +
+                                     self.top_background_panel.height + panel_gap)
+                            self.hdri_panel.update_position(panel_x, panel_y)
+
+                        self.hdri_panel.visible = True
+                        area.tag_redraw()
+                        break
+        elif self.hdri_panel:
+            self.hdri_panel.visible = False
+            # Force redraw
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+
+        print(f"  🌅  HDRI panel {'opened' if self.hdri_panel_visible else 'closed'}")
+
+    def _handle_hdri_selected(self, exr_path, hdri_name):
+        """Handle HDRI selection from panel."""
+        import bpy
+
+        self.current_hdri = exr_path
+        print(f"  🌅  Selected HDRI: {hdri_name}")
+
+        # Apply HDRI to world background
+        self._setup_hdri_background(exr_path)
+
+        # If HDRI is not currently enabled, enable it automatically
+        if not self.hdri_enabled:
+            self.hdri_enabled = True
+            if self.hdri_toggle:
+                self.hdri_toggle._toggled = True
+            self._set_viewport_shading(True)
+            print(f"  🌅  Auto-enabled HDRI viewport shading")
+
+        # Keep the panel open so user can try different HDRIs
+        # Panel will close when clicking outside or toggling dropdown
+
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+    def _close_hdri_panel(self):
+        """Close HDRI selection panel."""
+        import bpy
+
+        self.hdri_panel_visible = False
+        if self.hdri_panel:
+            self.hdri_panel.visible = False
+
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+    def _is_point_in_hdri_panel(self, x, y):
+        """Check if point is inside HDRI panel bounds."""
+        if not self.hdri_panel or not self.hdri_panel_visible:
+            return False
+        return self.hdri_panel.is_in_rect(x, y)
+
+    def _set_viewport_shading(self, enabled):
+        """Enable/disable rendered shading with HDRI and EEVEE settings in viewport."""
+        import bpy
+
+        scene = bpy.context.scene
+
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        if enabled:
+                            # Store current viewport shading settings ONLY if not already stored
+                            if self.previous_shading_type is None:
+                                self.previous_shading_type = space.shading.type
+                                print(f"  🌅  Stored shading type: {space.shading.type}")
+                            if self.previous_use_scene_world is None:
+                                self.previous_use_scene_world = space.shading.use_scene_world
+                                print(f"  🌅  Stored use_scene_world: {space.shading.use_scene_world}")
+
+                            # Store current render engine and EEVEE settings
+                            if self.previous_render_engine is None:
+                                self.previous_render_engine = scene.render.engine
+                                print(f"  🌅  Stored render engine: {scene.render.engine}")
+
+                            # Check if current or previous engine is EEVEE (legacy or Next)
+                            is_eevee = scene.render.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT')
+                            was_eevee = self.previous_render_engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT')
+
+                            if is_eevee or was_eevee:
+                                eevee = scene.eevee
+                                if self.previous_use_raytracing is None:
+                                    self.previous_use_raytracing = eevee.use_raytracing if hasattr(eevee, 'use_raytracing') else False
+                                    if hasattr(eevee, 'ray_tracing_method'):
+                                        self.previous_ray_tracing_method = eevee.ray_tracing_method
+                                    if hasattr(eevee, 'ray_tracing_options') and hasattr(eevee.ray_tracing_options, 'resolution_scale'):
+                                        self.previous_ray_tracing_resolution = eevee.ray_tracing_options.resolution_scale
+                                    self.previous_fast_gi = eevee.use_fast_gi if hasattr(eevee, 'use_fast_gi') else False
+                                    self.previous_use_shadows = eevee.use_shadows if hasattr(eevee, 'use_shadows') else True
+                                    print(f"  🌅  Stored EEVEE settings")
+
+                            # Enable RENDERED shading mode with scene world
+                            space.shading.type = 'RENDERED'
+                            space.shading.use_scene_world = True
+
+                            # Switch to EEVEE render engine (use EEVEE_NEXT if available, otherwise legacy EEVEE)
+                            try:
+                                scene.render.engine = 'BLENDER_EEVEE_NEXT'
+                                print(f"  🌅  Switched to EEVEE Next")
+                            except:
+                                try:
+                                    scene.render.engine = 'BLENDER_EEVEE'
+                                    print(f"  🌅  Switched to EEVEE (legacy)")
+                                except Exception as e:
+                                    print(f"  ⚠️  Could not switch to EEVEE: {e}")
+
+                            # Configure EEVEE settings with error handling
+                            try:
+                                eevee = scene.eevee
+
+                                # Enable raytracing
+                                if hasattr(eevee, 'use_raytracing'):
+                                    eevee.use_raytracing = True
+                                    print(f"  🌅  Enabled raytracing")
+
+                                # Set raytracing method
+                                if hasattr(eevee, 'ray_tracing_method'):
+                                    try:
+                                        eevee.ray_tracing_method = 'SCREEN'
+                                        print(f"  🌅  Set raytracing method to SCREEN")
+                                    except Exception as e:
+                                        print(f"  ⚠️  Could not set raytracing method: {e}")
+
+                                # Set raytracing resolution
+                                if hasattr(eevee, 'ray_tracing_options'):
+                                    if hasattr(eevee.ray_tracing_options, 'resolution_scale'):
+                                        try:
+                                            eevee.ray_tracing_options.resolution_scale = 2
+                                            print(f"  🌅  Set raytracing resolution to 1:2")
+                                        except Exception as e:
+                                            print(f"  ⚠️  Could not set raytracing resolution: {e}")
+
+                                # Enable Fast GI
+                                if hasattr(eevee, 'use_fast_gi'):
+                                    eevee.use_fast_gi = True
+                                    print(f"  🌅  Enabled Fast GI")
+
+                                # Enable shadows
+                                if hasattr(eevee, 'use_shadows'):
+                                    eevee.use_shadows = True
+                                    print(f"  🌅  Enabled shadows")
+
+                            except Exception as e:
+                                print(f"  ⚠️  Error configuring EEVEE settings: {e}")
+
+                            print(f"  🌅  Enabled RENDERED mode with EEVEE")
+
+                        else:
+                            # Restore previous shading mode
+                            if self.previous_shading_type is not None:
+                                space.shading.type = self.previous_shading_type
+                                print(f"  🌅  Restored shading type: {self.previous_shading_type}")
+                            else:
+                                space.shading.type = 'SOLID'
+
+                            # Restore previous use_scene_world setting
+                            if self.previous_use_scene_world is not None:
+                                space.shading.use_scene_world = self.previous_use_scene_world
+                                print(f"  🌅  Restored use_scene_world: {self.previous_use_scene_world}")
+                            else:
+                                space.shading.use_scene_world = False
+
+                            # Restore render engine
+                            if self.previous_render_engine is not None:
+                                scene.render.engine = self.previous_render_engine
+                                print(f"  🌅  Restored render engine: {self.previous_render_engine}")
+
+                            # Restore EEVEE settings if applicable (supports both legacy and Next)
+                            if scene.render.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
+                                eevee = scene.eevee
+                                if self.previous_use_raytracing is not None and hasattr(eevee, 'use_raytracing'):
+                                    eevee.use_raytracing = self.previous_use_raytracing
+                                if self.previous_ray_tracing_method is not None and hasattr(eevee, 'ray_tracing_method'):
+                                    eevee.ray_tracing_method = self.previous_ray_tracing_method
+                                if self.previous_ray_tracing_resolution is not None and hasattr(eevee, 'ray_tracing_options') and hasattr(eevee.ray_tracing_options, 'resolution_scale'):
+                                    eevee.ray_tracing_options.resolution_scale = self.previous_ray_tracing_resolution
+                                if self.previous_fast_gi is not None and hasattr(eevee, 'use_fast_gi'):
+                                    eevee.use_fast_gi = self.previous_fast_gi
+                                if self.previous_use_shadows is not None and hasattr(eevee, 'use_shadows'):
+                                    eevee.use_shadows = self.previous_use_shadows
+                                print(f"  🌅  Restored EEVEE settings")
+
+                area.tag_redraw()
+
+    def _setup_hdri_background(self, hdri_path):
+        """Set up world shader with HDRI environment texture."""
+        import bpy
+
+        # Get or create world
+        world = bpy.context.scene.world
+        if not world:
+            world = bpy.data.worlds.new("World")
+            bpy.context.scene.world = world
+
+        # Enable nodes
+        world.use_nodes = True
+        nodes = world.node_tree.nodes
+        links = world.node_tree.links
+
+        # Clear existing nodes
+        nodes.clear()
+
+        # Create Environment Texture node
+        env_node = nodes.new('ShaderNodeTexEnvironment')
+        try:
+            env_node.image = bpy.data.images.load(hdri_path, check_existing=True)
+        except Exception as e:
+            print(f"⚠️ Failed to load HDRI: {e}")
+            return
+        env_node.location = (-300, 300)
+
+        # Create Background node
+        bg_node = nodes.new('ShaderNodeBackground')
+        bg_node.location = (0, 300)
+
+        # Create Output node
+        output_node = nodes.new('ShaderNodeOutputWorld')
+        output_node.location = (300, 300)
+
+        # Link nodes
+        links.new(env_node.outputs['Color'], bg_node.inputs['Color'])
+        links.new(bg_node.outputs['Background'], output_node.inputs['Surface'])
+
+        print(f"  🌅  HDRI background applied: {Path(hdri_path).name}")
+
+    def _backup_world_nodes(self, world):
+        """Backup the current world node setup."""
+        import bpy
+
+        if not world or not world.use_nodes:
+            return None
+
+        backup = {
+            'nodes': [],
+            'links': []
+        }
+
+        # Store node information
+        for node in world.node_tree.nodes:
+            node_data = {
+                'type': node.bl_idname,
+                'location': tuple(node.location),
+                'name': node.name
+            }
+
+            # Store node-specific data
+            if node.bl_idname == 'ShaderNodeBackground':
+                node_data['color'] = tuple(node.inputs['Color'].default_value)
+                node_data['strength'] = node.inputs['Strength'].default_value
+            elif node.bl_idname == 'ShaderNodeTexEnvironment':
+                if node.image:
+                    node_data['image_name'] = node.image.name
+
+            backup['nodes'].append(node_data)
+
+        # Store link information
+        for link in world.node_tree.links:
+            link_data = {
+                'from_node': link.from_node.name,
+                'from_socket': link.from_socket.name,
+                'to_node': link.to_node.name,
+                'to_socket': link.to_socket.name
+            }
+            backup['links'].append(link_data)
+
+        return backup
+
+    def _restore_world_background(self):
+        """Restore the original world background setup."""
+        import bpy
+
+        world = bpy.context.scene.world
+        if not world:
+            return
+
+        # If we have a backup, restore it
+        if self.original_world_nodes:
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            links = world.node_tree.links
+
+            # Clear current nodes
+            nodes.clear()
+
+            # Recreate original nodes
+            node_map = {}
+            for node_data in self.original_world_nodes['nodes']:
+                new_node = nodes.new(node_data['type'])
+                new_node.location = node_data['location']
+                node_map[node_data['name']] = new_node
+
+                # Restore node-specific data
+                if node_data['type'] == 'ShaderNodeBackground':
+                    if 'color' in node_data:
+                        new_node.inputs['Color'].default_value = node_data['color']
+                    if 'strength' in node_data:
+                        new_node.inputs['Strength'].default_value = node_data['strength']
+                elif node_data['type'] == 'ShaderNodeTexEnvironment':
+                    if 'image_name' in node_data and node_data['image_name'] in bpy.data.images:
+                        new_node.image = bpy.data.images[node_data['image_name']]
+
+            # Recreate links
+            for link_data in self.original_world_nodes['links']:
+                from_node = node_map.get(link_data['from_node'])
+                to_node = node_map.get(link_data['to_node'])
+
+                if from_node and to_node:
+                    from_socket = from_node.outputs.get(link_data['from_socket'])
+                    to_socket = to_node.inputs.get(link_data['to_socket'])
+
+                    if from_socket and to_socket:
+                        links.new(from_socket, to_socket)
+
+            print("  🌅  World background restored to original state")
+        else:
+            # No backup available, create default gray world
+            world.use_nodes = True
+            nodes = world.node_tree.nodes
+            links = world.node_tree.links
+            nodes.clear()
+
+            bg_node = nodes.new('ShaderNodeBackground')
+            bg_node.inputs['Color'].default_value = (0.05, 0.05, 0.05, 1.0)
+            bg_node.location = (0, 300)
+
+            output_node = nodes.new('ShaderNodeOutputWorld')
+            output_node.location = (300, 300)
+
+            links.new(bg_node.outputs['Background'], output_node.inputs['Surface'])
+            print("  🌅  World background set to default gray")
 
     def _handle_auto_lod_change(self, checked):
         """Handle Auto LOD checkbox change."""
@@ -2595,7 +3576,36 @@ class ImportToolbar:
 
     def _handle_accept(self, button):
         """Handle Accept button click."""
+        import bpy
         print("Accepted Import")
+
+        # Restore HDRI and viewport state to original
+        if self.hdri_enabled:
+            # Turn off HDRI toggle
+            if self.hdri_toggle:
+                self.hdri_toggle._toggled = False
+            self.hdri_enabled = False
+            # Restore original world
+            self._restore_world_background()
+            # Restore original viewport shading
+            self._set_viewport_shading(False)
+            print("  🌅  Restored original HDRI state")
+
+        # Close HDRI panel if open
+        if self.hdri_panel_visible:
+            self.hdri_panel_visible = False
+            if self.hdri_panel:
+                self.hdri_panel.visible = False
+
+        # Reset stored viewport states for next time toolbar is used
+        self.previous_shading_type = None
+        self.previous_use_scene_world = None
+        self.previous_render_engine = None
+        self.previous_use_raytracing = None
+        self.previous_ray_tracing_method = None
+        self.previous_ray_tracing_resolution = None
+        self.previous_fast_gi = None
+        self.previous_use_shadows = None
 
         # Disable wireframe mode if it was enabled
         if self.wireframe_enabled:
@@ -3029,6 +4039,34 @@ class ImportToolbar:
             self.lod_loading_state = False
             if self.lod_slider:
                 self.lod_slider.set_loading_state(False)
+
+        # Restore HDRI and viewport state to original
+        if self.hdri_enabled:
+            # Turn off HDRI toggle
+            if self.hdri_toggle:
+                self.hdri_toggle._toggled = False
+            self.hdri_enabled = False
+            # Restore original world
+            self._restore_world_background()
+            # Restore original viewport shading
+            self._set_viewport_shading(False)
+            print("  🌅  Restored original HDRI state")
+
+        # Close HDRI panel if open
+        if self.hdri_panel_visible:
+            self.hdri_panel_visible = False
+            if self.hdri_panel:
+                self.hdri_panel.visible = False
+
+        # Reset stored viewport states for next time toolbar is used
+        self.previous_shading_type = None
+        self.previous_use_scene_world = None
+        self.previous_render_engine = None
+        self.previous_use_raytracing = None
+        self.previous_ray_tracing_method = None
+        self.previous_ray_tracing_resolution = None
+        self.previous_fast_gi = None
+        self.previous_use_shadows = None
 
         # Disable wireframe mode if it was enabled
         if self.wireframe_enabled:
@@ -3547,6 +4585,21 @@ class ImportToolbar:
         if self.wireframe_toggle:
             self.wireframe_toggle.draw()
 
+        # Draw HDRI toggle button
+        if self.hdri_toggle:
+            self.hdri_toggle.draw()
+
+        # Draw HDRI dropdown button
+        if self.hdri_dropdown_button:
+            self.hdri_dropdown_button.draw()
+
+        # ========================================
+        # HDRI PANEL (drawn on top of everything)
+        # ========================================
+        # Draw HDRI panel if visible
+        if self.hdri_panel and self.hdri_panel_visible:
+            self.hdri_panel.draw()
+
         # ========================================
         # BOTTOM TOOLBAR (LOD Controls & Buttons)
         # ========================================
@@ -3611,10 +4664,32 @@ class ImportToolbar:
         if not self.visible:
             return False
 
-        # Check top toolbar widgets first
+        # Check HDRI panel first (if visible, it's on top)
+        if self.hdri_panel_visible and self.hdri_panel:
+            if self.hdri_panel.mouse_down(x, y):
+                return True
+            # Click outside HDRI panel - close it
+            if not self._is_point_in_hdri_panel(x, y):
+                # Also check if clicking on the HDRI buttons themselves
+                is_on_hdri_button = False
+                if self.hdri_toggle and self.hdri_toggle.is_in_rect(x, y):
+                    is_on_hdri_button = True
+                if self.hdri_dropdown_button and self.hdri_dropdown_button.is_in_rect(x, y):
+                    is_on_hdri_button = True
+
+                # Only close if not clicking on HDRI buttons
+                if not is_on_hdri_button:
+                    self._close_hdri_panel()
+                    # Don't consume the event, let it pass through
+
+        # Check top toolbar widgets
         if self.lod_slider and self.lod_slider.mouse_down(x, y):
             return True
         if self.wireframe_toggle and self.wireframe_toggle.mouse_down(x, y):
+            return True
+        if self.hdri_toggle and self.hdri_toggle.mouse_down(x, y):
+            return True
+        if self.hdri_dropdown_button and self.hdri_dropdown_button.mouse_down(x, y):
             return True
 
         # Check dropdowns (they might be expanded)
@@ -3637,10 +4712,19 @@ class ImportToolbar:
         if not self.visible:
             return False
 
+        # Check HDRI panel first (if visible)
+        if self.hdri_panel_visible and self.hdri_panel:
+            if self.hdri_panel.mouse_up(x, y):
+                return True
+
         # Check top toolbar widgets
         if self.lod_slider and self.lod_slider.mouse_up(x, y):
             return True
         if self.wireframe_toggle and self.wireframe_toggle.mouse_up(x, y):
+            return True
+        if self.hdri_toggle and self.hdri_toggle.mouse_up(x, y):
+            return True
+        if self.hdri_dropdown_button and self.hdri_dropdown_button.mouse_up(x, y):
             return True
 
         # Check action buttons
@@ -3652,12 +4736,16 @@ class ImportToolbar:
 
     def handle_mouse_move(self, x, y):
         """Handle mouse move events for hover effects.
-        
+
         Returns:
             bool: True if dragging (should consume event), False otherwise
         """
         if not self.visible:
             return False
+
+        # Handle HDRI panel hover (if visible)
+        if self.hdri_panel_visible and self.hdri_panel:
+            self.hdri_panel.mouse_move(x, y)
 
         # Handle top toolbar hover/drag states
         is_dragging = False
@@ -3666,9 +4754,15 @@ class ImportToolbar:
             # Check if slider is currently dragging
             if hasattr(self.lod_slider, '_is_dragging'):
                 is_dragging = self.lod_slider._is_dragging
-        
+
         if self.wireframe_toggle:
             self.wireframe_toggle.mouse_move(x, y)
+
+        if self.hdri_toggle:
+            self.hdri_toggle.mouse_move(x, y)
+
+        if self.hdri_dropdown_button:
+            self.hdri_dropdown_button.mouse_move(x, y)
 
         # Handle dropdown hover states
         if self.min_lod_dropdown:
@@ -3681,5 +4775,5 @@ class ImportToolbar:
             self.accept_button.mouse_move(x, y)
         if self.cancel_button:
             self.cancel_button.mouse_move(x, y)
-        
+
         return is_dragging
