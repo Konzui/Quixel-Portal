@@ -816,6 +816,7 @@ class BL_UI_Dropdown(BL_UI_Widget):
         self._is_open = False
         self._bg_color = (0.157, 0.157, 0.157, 1.0)  # #282828
         self._hover_bg_color = (0.475, 0.475, 0.475, 1.0)  # #797979
+        self._active_bg_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8 - Blue for selected item
         self._text_color = (1.0, 1.0, 1.0, 1.0)
         self._text_size = 12
         self.on_change = None
@@ -1239,20 +1240,56 @@ class BL_UI_Dropdown(BL_UI_Widget):
                 4, self._bg_color, segments=16
             )
 
-            # Now draw hovered item on top with different color
-            if 0 <= self._hovered_item_index < len(self._items):
-                hovered_item_y = dropdown_y + (self._hovered_item_index * item_height)
-                # Draw hovered item background (will cover the base color)
+            # Draw active (selected) item with blue background
+            if 0 <= self._selected_index < len(self._items) and self._selected_index != self._hovered_item_index:
+                active_item_y = dropdown_y + (self._selected_index * item_height)
+                # Draw active item background
                 if DrawConstants.anti_aliased_rect_shader is not None:
                     viewport = gpu.state.viewport_get()
                     viewport_width = viewport[2] if len(viewport) > 2 else 1920
                     viewport_height = viewport[3] if len(viewport) > 3 else 1080
-                    
+
+                    if len(self._active_bg_color) == 3:
+                        color_rgba = (self._active_bg_color[0], self._active_bg_color[1], self._active_bg_color[2], 1.0)
+                    else:
+                        color_rgba = self._active_bg_color
+
+                    gpu.state.blend_set('ALPHA')
+                    aa_rect_shader = DrawConstants.anti_aliased_rect_shader
+                    aa_rect_shader.bind()
+                    aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
+                    aa_rect_shader.uniform_float("color", color_rgba)
+                    aa_rect_shader.uniform_float("edgeSoftness", 1.0)
+                    aa_rect_shader.uniform_float("rectPos", (self.x_screen, active_item_y))
+                    aa_rect_shader.uniform_float("rectSize", (self.width, item_height))
+                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
+                    gpu.state.blend_set('NONE')
+                else:
+                    # Fallback
+                    gpu.state.blend_set('ALPHA')
+                    shader = DrawConstants.uniform_shader
+                    shader.bind()
+                    shader.uniform_float("color", self._active_bg_color)
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.translate((self.x_screen, active_item_y))
+                        gpu.matrix.scale((self.width, item_height))
+                        DrawConstants.rect_batch_h.draw(shader)
+                    gpu.state.blend_set('NONE')
+
+            # Now draw hovered item on top with different color (takes priority over active)
+            if 0 <= self._hovered_item_index < len(self._items):
+                hovered_item_y = dropdown_y + (self._hovered_item_index * item_height)
+                # Draw hovered item background (will cover the base color and active color)
+                if DrawConstants.anti_aliased_rect_shader is not None:
+                    viewport = gpu.state.viewport_get()
+                    viewport_width = viewport[2] if len(viewport) > 2 else 1920
+                    viewport_height = viewport[3] if len(viewport) > 3 else 1080
+
                     if len(self._hover_bg_color) == 3:
                         color_rgba = (self._hover_bg_color[0], self._hover_bg_color[1], self._hover_bg_color[2], 1.0)
                     else:
                         color_rgba = self._hover_bg_color
-                    
+
                     gpu.state.blend_set('ALPHA')
                     aa_rect_shader = DrawConstants.anti_aliased_rect_shader
                     aa_rect_shader.bind()
@@ -1603,7 +1640,7 @@ class BL_UI_ToggleButton(BL_UI_Widget):
         self._icon_path = None  # Path to icon image (PNG)
         self._icon_image = None  # Loaded Blender image
         self._icon_texture = None  # GPU texture from image
-        self._bg_color = (0.137, 0.137, 0.137, 1.0)  # #232323
+        self._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d (same as toolbar background)
         self._toggled_bg_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8 when toggled
         self._hover_bg_color = (0.2, 0.2, 0.2, 1.0)
         self._border_color = (0.329, 0.329, 0.329, 1.0)
@@ -1846,7 +1883,7 @@ class BL_UI_DropdownButton(BL_UI_Widget):
         self._icon_path = None
         self._icon_image = None
         self._icon_texture = None
-        self._bg_color = (0.137, 0.137, 0.137, 1.0)  # #232323
+        self._bg_color = (0.114, 0.114, 0.114, 1.0)  # #1d1d1d (same as toolbar background)
         self._hover_bg_color = (0.475, 0.475, 0.475, 1.0)  # #797979
         self._is_hovered = False
         self.on_click = None
@@ -1975,10 +2012,10 @@ class BL_UI_DropdownButton(BL_UI_Widget):
 class BL_UI_HDRIThumbnailButton(BL_UI_Widget):
     """HDRI thumbnail button widget (128x128px)."""
 
-    def __init__(self, x, y, size, thumbnail_path, exr_path, hdri_name):
+    def __init__(self, x, y, size, thumbnail_path, hdr_path, hdri_name):
         super().__init__(x, y, size, size)
         self.thumbnail_path = thumbnail_path
-        self.exr_path = exr_path
+        self.hdr_path = hdr_path
         self.hdri_name = hdri_name
         self._thumbnail_image = None
         self._thumbnail_texture = None
@@ -2165,7 +2202,7 @@ class BL_UI_HDRIThumbnailButton(BL_UI_Widget):
         """Handle mouse up event."""
         if self.is_in_rect(x, y):
             if self.on_select:
-                self.on_select(self.exr_path, self.hdri_name)
+                self.on_select(self.hdr_path, self.hdri_name)
             return True
         return False
 
@@ -2204,7 +2241,7 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         self.selected_hdri_path = None
 
         # Create thumbnail buttons
-        for idx, (thumb_path, exr_path, hdri_name) in enumerate(available_hdris):
+        for idx, (thumb_path, hdr_path, hdri_name) in enumerate(available_hdris):
             row = idx // thumbnails_per_row
             col = idx % thumbnails_per_row
 
@@ -2212,7 +2249,7 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
             btn_y = y + panel_padding + row * (thumbnail_size + thumbnail_spacing)
 
             btn = BL_UI_HDRIThumbnailButton(btn_x, btn_y, thumbnail_size,
-                                           thumb_path, exr_path, hdri_name)
+                                           thumb_path, hdr_path, hdri_name)
             btn.on_select = self._handle_thumbnail_select
             self.thumbnail_buttons.append(btn)
 
@@ -2222,17 +2259,17 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         for btn in self.thumbnail_buttons:
             btn.init(context)
 
-    def _handle_thumbnail_select(self, exr_path, hdri_name):
+    def _handle_thumbnail_select(self, hdr_path, hdri_name):
         """Handle thumbnail selection."""
-        self.selected_hdri_path = exr_path
+        self.selected_hdri_path = hdr_path
 
         # Update selected state for all buttons
         for btn in self.thumbnail_buttons:
-            btn.is_selected = (btn.exr_path == exr_path)
+            btn.is_selected = (btn.hdr_path == hdr_path)
 
         # Call parent callback
         if self.on_hdri_selected:
-            self.on_hdri_selected(exr_path, hdri_name)
+            self.on_hdri_selected(hdr_path, hdri_name)
 
     def draw(self):
         """Draw the HDRI panel."""
@@ -2328,14 +2365,16 @@ class BL_UI_Slider(BL_UI_Widget):
 
         # Visual properties
         self._track_height = 4
-        self._track_color = (0.333, 0.333, 0.333, 1.0)  # #555555
+        self._track_color = (0.333, 0.333, 0.333, 1.0)  # #555555 (inside min/max range)
+        self._track_color_outside = (0.2, 0.2, 0.2, 1.0)  # Darker gray for outside range (slightly brighter)
         self._track_border_color = (0.329, 0.329, 0.329, 1.0)
         self._handle_radius = 8
         self._handle_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8
         self._handle_hover_color = (0.094, 0.620, 1.0, 1.0)  # Slightly lighter
         self._handle_pressed_color = (0.055, 0.463, 0.820, 1.0)  # Slightly darker
-        self._marker_active_color = (0.333, 0.333, 0.333, 1.0)  # #555555 for available LODs
+        self._marker_active_color = (0.333, 0.333, 0.333, 1.0)  # #555555 for markers inside range
         self._marker_inactive_color = (0.071, 0.071, 0.071, 1.0)  # #121212 for unavailable LODs
+        self._marker_outside_range_color = (0.2, 0.2, 0.2, 1.0)  # Darker gray for markers outside range (slightly brighter)
         self._minmax_marker_color = (0.804, 0.804, 0.804, 1.0)  # #CDCDCD for min/max LOD markers
 
         # State
@@ -2429,17 +2468,66 @@ class BL_UI_Slider(BL_UI_Widget):
         # Recalculate marker positions if needed
         self._calculate_marker_positions()
 
-        # Draw track
+        # Draw track (split into segments based on min/max range)
         track_y = self.y_screen + (self.height - self._track_height) / 2
-        draw_rounded_rect(
-            self.x_screen + self._handle_radius,
-            track_y,
-            self.width - (self._handle_radius * 2),
-            self._track_height,
-            2,
-            self._track_color,
-            segments=8
-        )
+        track_start_x = self.x_screen + self._handle_radius
+        track_full_width = self.width - (self._handle_radius * 2)
+
+        # Determine if we have min/max LOD set
+        if self._min_lod is not None and self._max_lod is not None and len(self._marker_positions) > 0:
+            # Calculate positions for the three segments
+            min_lod_x = self._marker_positions[self._min_lod] if self._min_lod < len(self._marker_positions) else track_start_x
+            max_lod_x = self._marker_positions[self._max_lod] if self._max_lod < len(self._marker_positions) else track_start_x + track_full_width
+
+            # Segment 1: Start to min_lod (darker gray)
+            if min_lod_x > track_start_x:
+                segment1_width = min_lod_x - track_start_x
+                draw_rounded_rect(
+                    track_start_x,
+                    track_y,
+                    segment1_width,
+                    self._track_height,
+                    2,
+                    self._track_color_outside,
+                    segments=8
+                )
+
+            # Segment 2: min_lod to max_lod (normal color)
+            segment2_width = max_lod_x - min_lod_x
+            draw_rounded_rect(
+                min_lod_x,
+                track_y,
+                segment2_width,
+                self._track_height,
+                2,
+                self._track_color,
+                segments=8
+            )
+
+            # Segment 3: max_lod to end (darker gray)
+            track_end_x = track_start_x + track_full_width
+            if max_lod_x < track_end_x:
+                segment3_width = track_end_x - max_lod_x
+                draw_rounded_rect(
+                    max_lod_x,
+                    track_y,
+                    segment3_width,
+                    self._track_height,
+                    2,
+                    self._track_color_outside,
+                    segments=8
+                )
+        else:
+            # No min/max range set, draw full track with normal color
+            draw_rounded_rect(
+                track_start_x,
+                track_y,
+                track_full_width,
+                self._track_height,
+                2,
+                self._track_color,
+                segments=8
+            )
 
         # Draw markers
         for i, marker_x in enumerate(self._marker_positions):
@@ -2447,15 +2535,20 @@ class BL_UI_Slider(BL_UI_Widget):
             is_max_lod = (self._max_lod is not None and i == self._max_lod)
             is_minmax = is_min_lod or is_max_lod
 
+            # Check if marker is inside or outside min/max range
+            is_inside_range = True
+            if self._min_lod is not None and self._max_lod is not None:
+                is_inside_range = (self._min_lod <= i <= self._max_lod)
+
             # Determine marker properties based on type
             if is_minmax:
-                # Min/Max LOD markers: #CDCDCD color, extra tall
+                # Min/Max LOD markers: always use light gray color, extra tall
                 marker_color = self._minmax_marker_color
                 marker_width = 3
                 marker_height = 16
             else:
-                # Regular LOD markers: all the same #555555 color
-                marker_color = self._marker_active_color
+                # Regular LOD markers: darker gray outside range, normal gray inside
+                marker_color = self._marker_outside_range_color if not is_inside_range else self._marker_active_color
                 marker_width = 2
                 marker_height = 12
 
@@ -2754,7 +2847,7 @@ class ImportToolbar:
     def _scan_hdri_assets(self):
         """Scan assets/img folder for HDRI files.
 
-        Returns list of tuples: (thumbnail_path, exr_path, hdri_name)
+        Returns list of tuples: (thumbnail_path, hdr_path, hdri_name)
         """
         addon_dir = Path(__file__).parent.parent
         hdri_dir = addon_dir / "assets" / "img"
@@ -2767,14 +2860,14 @@ class ImportToolbar:
 
         # Scan for PNG files (thumbnails)
         for png_file in hdri_dir.glob("*.png"):
-            # Get corresponding EXR file
-            exr_file = png_file.with_suffix(".exr")
+            # Get corresponding HDR file
+            hdr_file = png_file.with_suffix(".hdr")
 
-            if exr_file.exists():
+            if hdr_file.exists():
                 hdri_name = png_file.stem  # Filename without extension
-                hdri_list.append((str(png_file), str(exr_file), hdri_name))
+                hdri_list.append((str(png_file), str(hdr_file), hdri_name))
             else:
-                print(f"⚠️ Missing EXR file for thumbnail: {png_file.name}")
+                print(f"⚠️ Missing HDR file for thumbnail: {png_file.name}")
 
         # Sort by name, but put default HDRI first
         default_hdri_name = "kloofendal_48d_partly_cloudy_puresky_1k"
@@ -3151,15 +3244,15 @@ class ImportToolbar:
             if not self.current_hdri:
                 # Find the default HDRI
                 default_hdri_name = "kloofendal_48d_partly_cloudy_puresky_1k"
-                for thumb_path, exr_path, hdri_name in self.available_hdris:
+                for thumb_path, hdr_path, hdri_name in self.available_hdris:
                     if hdri_name == default_hdri_name:
-                        self.current_hdri = exr_path
-                        self._setup_hdri_background(exr_path)
+                        self.current_hdri = hdr_path
+                        self._setup_hdri_background(hdr_path)
                         print(f"  🌅  Loaded default HDRI: {hdri_name}")
                         # Update panel selection if it exists
                         if self.hdri_panel:
                             for btn in self.hdri_panel.thumbnail_buttons:
-                                btn.is_selected = (btn.exr_path == exr_path)
+                                btn.is_selected = (btn.hdr_path == hdr_path)
                         break
             else:
                 # Re-enable with previously selected HDRI
@@ -3207,15 +3300,15 @@ class ImportToolbar:
 
         print(f"  🌅  HDRI panel {'opened' if self.hdri_panel_visible else 'closed'}")
 
-    def _handle_hdri_selected(self, exr_path, hdri_name):
+    def _handle_hdri_selected(self, hdr_path, hdri_name):
         """Handle HDRI selection from panel."""
         import bpy
 
-        self.current_hdri = exr_path
+        self.current_hdri = hdr_path
         print(f"  🌅  Selected HDRI: {hdri_name}")
 
         # Apply HDRI to world background
-        self._setup_hdri_background(exr_path)
+        self._setup_hdri_background(hdr_path)
 
         # If HDRI is not currently enabled, enable it automatically
         if not self.hdri_enabled:
@@ -3407,6 +3500,7 @@ class ImportToolbar:
         env_node = nodes.new('ShaderNodeTexEnvironment')
         try:
             env_node.image = bpy.data.images.load(hdri_path, check_existing=True)
+            env_node.interpolation = 'Cubic'  # Set interpolation to Cubic for better quality
         except Exception as e:
             print(f"⚠️ Failed to load HDRI: {e}")
             return
@@ -4477,7 +4571,7 @@ class ImportToolbar:
             # Set base color
             bsdf.inputs["Base Color"].default_value = color
             # Make it emit light so it's visible
-            bsdf.inputs["Emission Strength"].default_value = 0.5
+            bsdf.inputs["Emission Strength"].default_value = 10.0
             bsdf.inputs["Emission Color"].default_value = color
 
         return mat

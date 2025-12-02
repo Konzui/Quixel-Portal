@@ -12,7 +12,9 @@
       "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" diff)",
       "Bash(dir:*)",
       "WebSearch",
-      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" add .)"
+      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" add .)",
+      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" log --oneline -5)",
+      "Bash(git -C \"C:\\Users\\Benutzer1\\OneDrive - Hogeschool West-Vlaanderen\\Documenten\\_Dev\\Blender\\Addons\\Quixel Portal\" commit -m \"$(cat <<''EOF''\nAdd HDRI toolbar with viewport enhancement and state management\n\nImplement comprehensive HDRI system for import preview toolbar:\n\n- Add HDRI toggle button with dropdown for asset selection\n- Create thumbnail grid panel (8 HDRIs) with hover/selection states\n- Automatic RENDERED mode with EEVEE/EEVEE Next configuration\n- Enable raytracing (Screen-Trace, 1:2 resolution), Fast GI, and shadows\n- Complete state preservation and restoration on enable/disable\n- Fix viewport shading restoration (use_scene_world bug)\n- Support both BLENDER_EEVEE and BLENDER_EEVEE_NEXT engines\n- Panel stays open for multi-selection, auto-enables on thumbnail click\n- Clean state restoration on Accept/Cancel operations\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

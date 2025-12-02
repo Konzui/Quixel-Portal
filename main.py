@@ -128,22 +128,23 @@ def _print_performance_breakdown():
 
 def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=True):
     """Select imported objects and frame the view to show them.
-    
+
     Args:
         imported_objects: List of imported Blender objects to select and frame
         context: Optional Blender context (defaults to bpy.context)
         skip_if_temp_scene: If True, skip framing if we're in a temp preview scene
     """
     if not imported_objects:
+        print(f"  ⚠️ No objects to frame")
         return
-    
+
     # Always use fresh context to avoid stale references
     try:
         context = bpy.context
     except:
         print(f"  ⚠️ Could not get valid context for framing")
         return
-    
+
     # Skip framing in temp scenes to avoid crashes with invalid depsgraph
     if skip_if_temp_scene:
         try:
@@ -153,138 +154,72 @@ def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=Tr
                 return
         except:
             pass
-    
-    # Validate context is valid and scene exists
-    try:
-        if context.scene is None or context.scene.name not in bpy.data.scenes:
-            print(f"  ⚠️ Context scene is invalid, skipping frame")
-            return
-        if context.window_manager is None:
-            print(f"  ⚠️ Context window_manager is invalid, skipping frame")
-            return
-    except (AttributeError, KeyError, ReferenceError):
-        print(f"  ⚠️ Context validation failed, skipping frame")
-        return
-    
-    # Filter to only valid, existing objects with proper validation
+
+    print(f"  🎯 Framing {len(imported_objects)} object(s)...")
+
+    # Filter to only valid, existing objects
     valid_objects = []
     for obj in imported_objects:
         try:
-            # Check if object reference is valid and object exists in data
-            if obj is None:
-                continue
-            # Re-fetch from bpy.data.objects to ensure reference is valid
-            if obj.name in bpy.data.objects:
-                # Verify the object is the same one (not a new object with same name)
-                fetched_obj = bpy.data.objects[obj.name]
-                if fetched_obj == obj:
-                    # Also verify object is in the current scene
-                    if obj.name in context.scene.objects:
-                        valid_objects.append(obj)
+            if obj and obj.name in bpy.data.objects and obj.name in context.scene.objects:
+                valid_objects.append(obj)
         except (ReferenceError, AttributeError, KeyError):
-            # Object reference is invalid, skip it
             continue
-    
+
     if not valid_objects:
+        print(f"  ⚠️ No valid objects found to frame")
         return
-    
+
+    print(f"  🎯 Found {len(valid_objects)} valid object(s)")
+
     try:
         # Deselect all objects first
         bpy.ops.object.select_all(action='DESELECT')
-        
-        # Select all imported objects with additional safety checks
-        selected_count = 0
+
+        # Select all valid objects
         for obj in valid_objects:
             try:
-                # Double-check object is still valid before selecting
-                if obj and obj.name in bpy.data.objects and bpy.data.objects[obj.name] == obj:
-                    if obj.name in context.scene.objects:
-                        obj.select_set(True)
-                        selected_count += 1
-            except (ReferenceError, AttributeError, KeyError):
-                # Object became invalid, skip it
+                obj.select_set(True)
+            except:
                 continue
-        
-        if selected_count == 0:
-            return
-        
-        # Set active object (use first valid object)
+
+        # Set active object
         if valid_objects:
             try:
-                first_obj = valid_objects[0]
-                if first_obj and first_obj.name in bpy.data.objects and bpy.data.objects[first_obj.name] == first_obj:
-                    if first_obj.name in context.scene.objects:
-                        context.view_layer.objects.active = first_obj
-            except (ReferenceError, AttributeError, KeyError):
+                context.view_layer.objects.active = valid_objects[0]
+            except:
                 pass
-        
-        # Frame the selected objects in the viewport
-        # Find a 3D viewport area with proper context validation
-        try:
-            for window in context.window_manager.windows:
-                if window is None:
+
+        # Frame the selected objects - use simple approach
+        # Find any 3D viewport and frame the view
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                # Find the 3D view region
+                region = None
+                for r in area.regions:
+                    if r.type == 'WINDOW':
+                        region = r
+                        break
+
+                if region is None:
                     continue
-                if window.screen is None:
-                    continue
-                for area in window.screen.areas:
-                    if area is None or area.type != 'VIEW_3D':
-                        continue
-                    # Override context to use this area
-                    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
-                    if region is None:
-                        continue
-                    
-                    # Validate all context components before using
-                    if context.scene is None or context.scene.name not in bpy.data.scenes:
-                        continue
-                    if context.view_layer is None:
-                        continue
-                        
-                    override = {
-                        'window': window,
-                        'screen': window.screen,
-                        'area': area,
-                        'region': region,
-                        'view_layer': context.view_layer,
-                        'scene': context.scene,
-                    }
-                    
-                    # Use context override to frame selected
-                    # Wrap in multiple try-except layers to catch any possible crash
+
+                # Override context to this 3D view with region
+                with context.temp_override(area=area, region=region):
                     try:
-                        # Double-check scene still exists before framing
-                        if context.scene.name not in bpy.data.scenes:
-                            continue
-                        
-                        # Use a fresh context override to avoid stale references
-                        with context.temp_override(**override):
-                            # This operation can crash if depsgraph is invalid
-                            # Catch all possible exceptions including SystemExit
-                            try:
-                                bpy.ops.view3d.view_selected()
-                            except (SystemExit, KeyboardInterrupt):
-                                # Re-raise these
-                                raise
-                            except Exception as e:
-                                print(f"  ⚠️ Could not frame view (non-critical): {e}")
-                                continue
-                    except (SystemExit, KeyboardInterrupt):
-                        # Re-raise these
-                        raise
+                        bpy.ops.view3d.view_selected()
+                        print(f"  ✅ Successfully framed objects in viewport")
+                        return
                     except Exception as e:
-                        # Catch any other exception that might cause a crash
-                        print(f"  ⚠️ Could not create context override for framing: {e}")
+                        print(f"  ⚠️ Could not frame view: {e}")
                         continue
-                    
-                    # Only frame in the first 3D viewport found
-                    # Print removed to reduce console clutter
-                    return
-        except Exception as e:
-            print(f"  ⚠️ Could not find viewport for framing: {e}")
-        
+
+        print(f"  ⚠️ No 3D viewport found for framing")
+
     except Exception as e:
         print(f"  ⚠️ Could not frame imported objects: {e}")
-        # Non-critical error, continue anyway
+        import traceback
+        traceback.print_exc()
 
 
 def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup=True, texture_resolution=None):
@@ -776,10 +711,10 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         lod_levels_tracker = [0]
         # Print removed to reduce console clutter
 
-    # Skip framing in temp scene - it can cause crashes with invalid depsgraph
-    # The toolbar will handle showing the objects, and we'll frame after accepting
-    # frame_imported_objects(all_imported_objects_tracker, context)
-    
+    # Frame imported objects immediately after import
+    print(f"🎯 Attempting to frame {len(all_imported_objects_tracker)} imported objects in preview scene")
+    frame_imported_objects(all_imported_objects_tracker, context, skip_if_temp_scene=False)
+
     # Validate context one more time before showing toolbar to prevent crashes
     try:
         # Force refresh context to ensure it's valid
@@ -847,9 +782,10 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
                 # Delete temporary preview scene
                 cleanup_preview_scene(temp_scene)
-                
+
                 # Frame the view to show transferred objects in original scene
-                frame_imported_objects(transferred_objects, bpy.context)
+                print(f"🎯 ABOUT TO FRAME {len(transferred_objects)} TRANSFERRED OBJECTS")
+                frame_imported_objects(transferred_objects, bpy.context, skip_if_temp_scene=False)
 
                 # Print removed to reduce console clutter
 

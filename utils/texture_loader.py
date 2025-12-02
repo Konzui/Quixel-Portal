@@ -53,7 +53,7 @@ def find_texture_files(asset_dir, extensions=None, texture_resolution=None):
         list: List of Path objects to texture files
     """
     if extensions is None:
-        extensions = ['.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff', '.exr']
+        extensions = ['.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff', '.exr', '.hdr']
 
     asset_dir = Path(asset_dir)
     texture_files = []
