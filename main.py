@@ -40,6 +40,10 @@ from .utils.scene_manager import (
     cleanup_imported_materials,
     setup_preview_camera,
 )
+from .utils.floor_plane_manager import (
+    create_floor_plane,
+    cleanup_floor_plane,
+)
 from .ui.import_modal import show_import_toolbar
 
 
@@ -362,6 +366,8 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
     # Only create preview scene if Glacier setup is enabled
     temp_scene = None
+    floor_obj = None
+    floor_mat = None
     if glacier_setup:
         # Create temporary preview scene for import
         temp_scene = create_preview_scene(context)
@@ -373,7 +379,7 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
 
         # Update context after scene switch
         context = bpy.context
-        
+
         # Ensure temp scene is completely clean - remove any leftover objects
         # This prevents interference from previous imports
         try:
@@ -388,20 +394,29 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         except Exception as e:
             print(f"  ⚠️ Could not clean temp scene: {e}")
 
+        # Create temporary floor plane with dev texture
+        floor_obj, floor_mat = create_floor_plane(context)
+
     # Track all imported objects and materials for toolbar cleanup
     all_imported_objects_tracker = []
     all_imported_materials_tracker = []
 
-    # Find all FBX files
-    fbx_files = find_fbx_files(asset_dir)
+    # Find all FBX files and detect 3D plant structure
+    fbx_files, is_3d_plant, fbx_variation_map = find_fbx_files(asset_dir)
 
     if not fbx_files:
         print(f"❌ No FBX files found")
-        # Clean up temp scene before returning
+        # Clean up temp scene and floor plane before returning
         if temp_scene:
+            cleanup_floor_plane(floor_obj, floor_mat)
             switch_to_scene(bpy.context, original_scene)
             cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
+    
+    # Detect LOD levels from FBX filenames BEFORE importing
+    from .operations.fbx_importer import detect_lod_levels_from_fbx
+    detected_lod_levels, max_lod = detect_lod_levels_from_fbx(fbx_files)
+    print(f"🔍 [LOD DETECTION] Detected {len(detected_lod_levels)} LOD level(s), max LOD: {max_lod}")
 
     # STEP 1: Import all FBX files
     step_start = time.time()
@@ -409,12 +424,15 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     for fbx_file in fbx_files:
         imported_objects, base_name = import_fbx_file(fbx_file, context)
         if imported_objects:
-            import_results.append((fbx_file, imported_objects, base_name))
+            # For 3D plants, store variation index with import results
+            variation_index = fbx_variation_map.get(fbx_file) if is_3d_plant else None
+            import_results.append((fbx_file, imported_objects, base_name, variation_index))
     
     if not import_results:
         print(f"❌ Failed to import any FBX files")
-        # Clean up temp scene before returning
+        # Clean up temp scene and floor plane before returning
         if temp_scene:
+            cleanup_floor_plane(floor_obj, floor_mat)
             switch_to_scene(bpy.context, original_scene)
             cleanup_preview_scene(temp_scene)
         return {'CANCELLED'}
@@ -449,7 +467,12 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     
     step_start = time.time()
     all_imported_objects_list = []
-    for fbx_file, imported_objects, _ in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            _, imported_objects, _ = result
+        else:
+            _, imported_objects, _, _ = result
         all_imported_objects_list.extend(imported_objects)
     set_ioi_lod_properties_for_objects(all_imported_objects_list)
     _performance_data['import_times']['Step 1.6: Set IOI LOD Properties'] = time.time() - step_start
@@ -463,6 +486,7 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     # STEP 2: Process each asset group
     step_start = time.time()
     for base_name, import_groups in all_imported_objects.items():
+        # import_groups now contains variation_index for 3D plants
         # Get proper name from JSON
         json_name, json_file = get_name_from_json(asset_dir)
         if json_name:
@@ -591,9 +615,16 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         apply_transforms(all_objects_to_process)
         
         # STEP 4: Group by variation
+        # For 3D plants, use folder-based variation organization
+        # For regular assets, use object name-based variation detection
         
         step4_start = time.time()
-        variations = organize_objects_by_variation(all_objects_to_process)
+        if is_3d_plant:
+            print(f"🌱 [3D PLANT] Using folder-based variation organization")
+            from .operations.asset_processor import organize_3d_plant_objects_by_variation
+            variations = organize_3d_plant_objects_by_variation(import_groups)
+        else:
+            variations = organize_objects_by_variation(all_objects_to_process)
         _performance_data['import_times']['Step 4: Detect Variations'] = time.time() - step4_start
         
         if not variations:
@@ -603,13 +634,21 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         # STEP 5: Create materials
         
         step5_start = time.time()
+        # Get variation folders for 3D plants
+        variation_folders_for_materials = None
+        if is_3d_plant:
+            from .operations.fbx_importer import detect_3d_plant_structure
+            _, variation_folders_for_materials = detect_3d_plant_structure(asset_dir)
+        
         create_materials_for_all_variations(
             asset_dir,
             attach_root_base_name,
             variations,
             import_groups,
             context,
-            texture_resolution
+            texture_resolution,
+            is_3d_plant=is_3d_plant,
+            variation_folders=variation_folders_for_materials
         )
         _performance_data['import_times']['Step 5: Create Materials'] = time.time() - step5_start
         
@@ -723,6 +762,7 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
             print(f"❌ Context scene is invalid before showing toolbar")
             # Switch back to original scene and cleanup
             if temp_scene:
+                cleanup_floor_plane(floor_obj, floor_mat)
                 switch_to_scene(bpy.context, original_scene)
                 cleanup_preview_scene(temp_scene)
             return {'CANCELLED'}
@@ -731,6 +771,7 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         # Switch back to original scene and cleanup
         try:
             if temp_scene:
+                cleanup_floor_plane(floor_obj, floor_mat)
                 switch_to_scene(bpy.context, original_scene)
                 cleanup_preview_scene(temp_scene)
         except:
@@ -754,6 +795,11 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     if toolbar:
         # Set available LOD levels
         toolbar.set_lod_levels(lod_levels_tracker)
+        
+        # Set max LOD dropdown to detected maximum
+        if max_lod is not None:
+            print(f"🔍 [TOOLBAR] Setting max LOD dropdown to LOD{max_lod}")
+            toolbar.set_max_lod(max_lod)
 
         # Position LODs for preview with text labels
         toolbar.position_lods_for_preview()
@@ -762,13 +808,16 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         def on_accept():
             """Handle accept - transfer assets to original scene and cleanup."""
             from .ui.import_modal import cleanup_toolbar
-            
+
             # Start accept timing
             _performance_data['accept_start_time'] = time.time()
 
             # Print removed to reduce console clutter
-        
+
             try:
+                # Clean up temporary floor plane before transferring assets
+                cleanup_floor_plane(floor_obj, floor_mat)
+
                 # Transfer all assets from temp scene to original scene
                 transferred_objects = transfer_assets_to_original_scene(
                     temp_scene,
@@ -806,13 +855,16 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         def on_cancel():
             """Handle cancel - discard all assets and return to original scene."""
             from .ui.import_modal import cleanup_toolbar
-            
+
             # Start cancel timing
             _performance_data['cancel_start_time'] = time.time()
 
             print(f"❌ USER CANCELLED IMPORT - DISCARDING ASSETS")
-        
+
             try:
+                # Clean up temporary floor plane before cleanup
+                cleanup_floor_plane(floor_obj, floor_mat)
+
                 # Switch back to original scene first
                 switch_to_scene(bpy.context, original_scene)
 

@@ -64,24 +64,61 @@ def find_texture_files(asset_dir, extensions=None, texture_resolution=None):
 
     # Filter by resolution if specified
     if texture_resolution:
-        # Normalize resolution (e.g., "2K" stays "2k")
+        # Normalize resolution (e.g., "2K" -> "2k" for comparison)
         resolution_lower = texture_resolution.lower()
+        resolution_upper = texture_resolution.upper()
 
         filtered_files = []
         for tex_file in texture_files:
-            filename_lower = tex_file.stem.lower()
-
-            # Check if filename contains the resolution string (e.g., "2k" in "wcljcaa_2K_Albedo.jpg")
-            if resolution_lower in filename_lower:
+            # Split filename by underscores into words
+            words = tex_file.stem.split('_')
+            words_lower = [w.lower() for w in words]
+            
+            # Check if resolution exists as a word (e.g., "2K" or "2k" in the word list)
+            # This handles both "2K" and "2k" formats
+            has_resolution = (texture_resolution in words or 
+                            resolution_lower in words_lower or 
+                            resolution_upper in words)
+            
+            if has_resolution:
                 filtered_files.append(tex_file)
 
         texture_files = filtered_files
+        print(f"🔍 Found {len(texture_files)} texture file(s) matching resolution '{texture_resolution}'")
+    else:
+        print(f"🔍 Found {len(texture_files)} texture file(s)")
 
     return texture_files
 
 
+def is_billboard_texture(filename):
+    """Check if a texture is a billboard texture.
+    
+    Billboard textures are typically used for the last LOD level in 3D plants.
+    They usually have "billboard" in the filename.
+    
+    Args:
+        filename: Filename (or Path) to analyze
+        
+    Returns:
+        bool: True if texture appears to be a billboard texture
+    """
+    # Split filename by underscores into words
+    words = str(filename).split('_')
+    words_lower = [w.lower() for w in words]
+    
+    # Check for billboard keywords
+    billboard_keywords = ['billboard', 'bb', 'bill']
+    
+    # Check if any billboard keyword exists as a word
+    return any(keyword in words_lower for keyword in billboard_keywords)
+
+
 def identify_texture_type(filename):
-    """Identify texture type from filename.
+    """Identify texture type from filename using word-splitting approach.
+    
+    Splits filename by underscores and checks if texture type keywords exist as words.
+    This is more reliable than substring matching.
     
     Args:
         filename: Filename (or Path) to analyze
@@ -90,20 +127,31 @@ def identify_texture_type(filename):
         str or None: Texture type ('albedo', 'roughness', 'normal', 'metallic', 'opacity', etc.)
                     or None if type cannot be determined
     """
-    filename_lower = str(filename).lower()
+    # Split filename by underscores into words (case-insensitive comparison)
+    words = str(filename).split('_')
+    words_lower = [w.lower() for w in words]
     
-    if 'albedo' in filename_lower or 'diffuse' in filename_lower or 'color' in filename_lower:
-        return 'albedo'
-    elif 'roughness' in filename_lower or 'rough' in filename_lower:
-        return 'roughness'
-    elif 'normal' in filename_lower and 'gl' not in filename_lower:
-        return 'normal'
-    elif 'displacement' in filename_lower or 'height' in filename_lower:
-        return 'displacement'
-    elif 'metallic' in filename_lower or 'metalness' in filename_lower:
-        return 'metallic'
-    elif 'opacity' in filename_lower or 'alpha' in filename_lower or 'mask' in filename_lower:
-        return 'opacity'
+    # Check each texture type - look for keywords as complete words
+    checks = [
+        ('albedo', ['albedo', 'diffuse', 'color']),
+        ('roughness', ['roughness', 'rough']),
+        ('normal', ['normal'], ['gl', 'gloss']),  # normal but not gl/gloss (those are separate types)
+        ('displacement', ['displacement', 'height']),
+        ('metallic', ['metallic', 'metalness']),
+        ('opacity', ['opacity', 'alpha', 'mask']),
+    ]
+    
+    for tex_type, keywords, *exclusions in checks:
+        exclusions = exclusions[0] if exclusions else []
+        
+        # Check if any keyword exists as a word (exact match, case-insensitive)
+        keyword_found = any(kw.lower() in words_lower for kw in keywords)
+        
+        # Check if any exclusion exists as a word
+        exclusion_found = any(ex.lower() in words_lower for ex in exclusions) if exclusions else False
+        
+        if keyword_found and not exclusion_found:
+            return tex_type
     
     return None
 

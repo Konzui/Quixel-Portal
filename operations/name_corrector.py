@@ -83,7 +83,12 @@ def find_canonical_base_name(import_results):
     # Example: "Aset_props__M_wk2jchx_00_a_LOD2"
     base_name_candidates = []
     
-    for fbx_file, imported_objects, _ in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            fbx_file, imported_objects, _ = result
+        else:
+            fbx_file, imported_objects, _, _ = result
         for obj in imported_objects:
             if obj.type != 'MESH' or not obj.data:
                 continue
@@ -125,7 +130,12 @@ def find_canonical_base_name(import_results):
     
     if not base_name_candidates:
         # Fallback: try to extract from FBX filenames
-        for fbx_file, _, _ in import_results:
+        for result in import_results:
+            # Handle both old format (3 elements) and new format (4 elements)
+            if len(result) == 3:
+                fbx_file, _, _ = result
+            else:
+                fbx_file, _, _, _ = result
             fbx_stem = Path(fbx_file).stem
             # Remove LOD suffix
             lod_match = re.search(r'_?LOD\d+$', fbx_stem, re.IGNORECASE)
@@ -166,7 +176,12 @@ def match_objects_to_fbx(import_results, canonical_base_name):
     
     # Use canonical base name for all objects from this asset
     # This ensures objects with wrong names still get grouped correctly
-    for fbx_file, imported_objects, _ in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            fbx_file, imported_objects, _ = result
+        else:
+            fbx_file, imported_objects, _, _ = result
         lod_level, has_lod = extract_lod_from_fbx(fbx_file)
         
         # Use canonical base name for all objects from this asset
@@ -377,7 +392,12 @@ def correct_object_names(import_results, fallback_base_name=None):
     
     # Step 3: Collect all objects that need checking
     all_objects = []
-    for fbx_file, imported_objects, _ in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            _, imported_objects, _ = result
+        else:
+            _, imported_objects, _, _ = result
         all_objects.extend(imported_objects)
     
     # Step 4: Rename objects
@@ -385,14 +405,26 @@ def correct_object_names(import_results, fallback_base_name=None):
     
     # Step 5: Update base_name in import_results to ensure correct grouping
     # This is critical - we need to update the base_name so grouping works correctly
-    for i, (fbx_file, imported_objects, old_base_name) in enumerate(import_results):
-        # Update the base_name in the tuple (we need to recreate the tuple)
-        import_results[i] = (fbx_file, imported_objects, canonical_base_name)
+    for i, result in enumerate(import_results):
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            fbx_file, imported_objects, old_base_name = result
+            # Update base_name in the tuple (keep old format)
+            import_results[i] = (fbx_file, imported_objects, canonical_base_name)
+        else:
+            fbx_file, imported_objects, old_base_name, variation_index = result
+            # Update base_name in the tuple (keep variation_index)
+            import_results[i] = (fbx_file, imported_objects, canonical_base_name, variation_index)
         # Print removed to reduce console clutter
     
     # Step 6: Validate completeness
     import_groups = []
-    for fbx_file, imported_objects, _ in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            fbx_file, imported_objects, _ = result
+        else:
+            fbx_file, imported_objects, _, _ = result
         import_groups.append({
             'fbx_file': fbx_file,
             'objects': imported_objects

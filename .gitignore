@@ -1,12 +1,11 @@
-# Python
+öö# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 
-# Build artifacts
-electron_app/build/
+# Build artifactselectron_app/build/
 electron_app/dist/
 electron_app/node_modules/
 *.log

@@ -30,6 +30,47 @@ def detect_asset_type(asset_dir):
     return asset_type
 
 
+def organize_3d_plant_objects_by_variation(import_groups):
+    """Organize 3D plant objects by folder-based variation index.
+    
+    For 3D plants, variations are determined by the folder they're in (Var 1, Var 2, etc.),
+    not by the object name.
+    
+    Args:
+        import_groups: List of import groups, each with 'fbx_file', 'objects', 'variation_index'
+        
+    Returns:
+        dict: {variation_letter_suffix: [list of objects]}
+    """
+    variations = {}
+    
+    print(f"🌱 [3D PLANT] Organizing objects by folder-based variations...")
+    
+    for import_group in import_groups:
+        variation_index = import_group.get('variation_index')
+        objects = import_group.get('objects', [])
+        fbx_file = import_group.get('fbx_file')
+        
+        if variation_index is None:
+            print(f"🌱 [3D PLANT]   ⚠️  FBX {fbx_file.name} has no variation index - skipping")
+            continue
+        
+        # Convert index to letter suffix (0→a, 1→b, etc.)
+        letter_suffix = index_to_letter_suffix(variation_index)
+        
+        if letter_suffix not in variations:
+            variations[letter_suffix] = []
+        
+        # Filter to only mesh objects
+        mesh_objects = [obj for obj in objects if obj.type == 'MESH' and obj.data]
+        variations[letter_suffix].extend(mesh_objects)
+        
+        print(f"🌱 [3D PLANT]   Variation {letter_suffix} (index {variation_index}): {len(mesh_objects)} object(s) from {fbx_file.name}")
+    
+    print(f"🌱 [3D PLANT] Organized into {len(variations)} variation(s)")
+    return variations
+
+
 def organize_objects_by_variation(objects):
     """Group objects by their variation index, then convert to letter suffixes.
     

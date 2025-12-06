@@ -18,6 +18,7 @@ from pathlib import Path
 from gpu_extras.batch import batch_for_shader
 from gpu_extras.presets import draw_circle_2d
 from mathutils import Vector, Matrix
+from ..utils.floor_plane_manager import create_floor_plane
 
 
 # Pre-computed shader constants for smooth circle rendering
@@ -814,13 +815,20 @@ class BL_UI_Dropdown(BL_UI_Widget):
         self._items = []
         self._selected_index = 0
         self._is_open = False
-        self._bg_color = (0.157, 0.157, 0.157, 1.0)  # #282828
+        self._bg_color = (0.157, 0.157, 0.157, 1.0)  # #282828 - Button background
+        self._menu_bg_color = (0.235, 0.235, 0.235, 1.0)  # #3C3C3C - Menu wrapper and items background
         self._hover_bg_color = (0.475, 0.475, 0.475, 1.0)  # #797979
-        self._active_bg_color = (0.0745, 0.541, 0.910, 1.0)  # #138ae8 - Blue for selected item
+        self._active_bg_color = (0.475, 0.475, 0.475, 1.0)  # Use hover color for selected item
         self._text_color = (1.0, 1.0, 1.0, 1.0)
         self._text_size = 12
         self.on_change = None
         self._hovered_item_index = -1  # Track which item is being hovered
+        self._has_ever_hovered = False  # Track if we've ever hovered over an item
+
+        # Check icon for selected item
+        self._check_icon_path = None
+        self._check_icon_image = None
+        self._check_icon_texture = None
 
         # Pre-create shader and batch
         self.shader = gpu.shader.from_builtin('UNIFORM_COLOR')
@@ -844,8 +852,34 @@ class BL_UI_Dropdown(BL_UI_Widget):
             return self._items[self._selected_index]
         return None
 
+    def _load_check_icon(self):
+        """Load check icon image and create GPU texture."""
+        if not self._check_icon_path:
+            return
+
+        icon_path = Path(self._check_icon_path)
+
+        if not icon_path.exists():
+            print(f"⚠️ Check icon not found at: {icon_path}")
+            return
+
+        try:
+            self._check_icon_image = bpy.data.images.load(str(icon_path))
+            self._check_icon_texture = gpu.texture.from_image(self._check_icon_image)
+        except Exception as e:
+            print(f"⚠️ Failed to load check icon: {e}")
+            self._check_icon_image = None
+            self._check_icon_texture = None
+
+    def init(self, context):
+        """Initialize widget and load check icon if path is set."""
+        super().init(context)
+        if self._check_icon_path:
+            self._load_check_icon()
+
     def _draw_selective_rounded_rect(self, x, y, width, height, color,
-                                      top_left=True, top_right=True, bottom_left=True, bottom_right=True):
+                                      top_left=True, top_right=True, bottom_left=True, bottom_right=True,
+                                      radius=4):
         """Draw a filled rectangle with selective rounded corners using cached batches.
 
         Args:
@@ -853,13 +887,12 @@ class BL_UI_Dropdown(BL_UI_Widget):
             width, height: Rectangle dimensions
             color: RGBA color tuple
             top_left, top_right, bottom_left, bottom_right: Which corners to round
+            radius: Corner radius (default 4)
         """
         # Initialize shaders if needed
         DrawConstants.initialize()
 
         gpu.state.blend_set('ALPHA')
-
-        radius = 4
         
         # Get viewport size for coordinate conversion
         viewport = gpu.state.viewport_get()
@@ -1166,6 +1199,58 @@ class BL_UI_Dropdown(BL_UI_Widget):
 
         gpu.state.blend_set('NONE')
 
+    def _draw_check_icon(self, x, y, item_height, item_width=None):
+        """Draw the check icon on the right side of a dropdown item.
+        
+        Args:
+            x: Left position of the item
+            y: Bottom position of the item
+            item_height: Height of the item
+            item_width: Width of the item (defaults to self.width if not provided)
+        """
+        if not self._check_icon_texture:
+            return
+
+        # Icon size is 16px
+        icon_size = 16
+        # Use provided width or fall back to self.width
+        width = item_width if item_width is not None else self.width
+        # Position on the right side with padding
+        icon_x = x + width - icon_size - 8  # 8px right padding
+        icon_y = y + (item_height - icon_size) / 2  # Center vertically
+
+        # Use IMAGE shader to draw the texture
+        gpu.state.blend_set('ALPHA')
+
+        try:
+            shader = gpu.shader.from_builtin('IMAGE')
+        except:
+            gpu.state.blend_set('NONE')
+            return
+
+        # Create batch for image quad
+        vertices = [
+            (icon_x, icon_y),
+            (icon_x + icon_size, icon_y),
+            (icon_x + icon_size, icon_y + icon_size),
+            (icon_x, icon_y + icon_size)
+        ]
+
+        texcoords = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        indices = [(0, 1, 2), (0, 2, 3)]
+
+        batch = batch_for_shader(
+            shader, 'TRIS',
+            {"pos": vertices, "texCoord": texcoords},
+            indices=indices
+        )
+
+        shader.bind()
+        shader.uniform_sampler("image", self._check_icon_texture)
+        batch.draw(shader)
+
+        gpu.state.blend_set('NONE')
+
     def draw(self):
         """Draw the dropdown widget."""
         if not self.visible:
@@ -1230,100 +1315,87 @@ class BL_UI_Dropdown(BL_UI_Widget):
         # If dropdown is open, draw items
         if self._is_open and self._items:
             item_height = 24
-            dropdown_y = self.y_screen + self.height
+            gap = 2  # 2px gap between button and dropdown menu
+            wrapper_padding = 2  # 2px padding inside wrapper
+            wrapper_border = 1  # 1px border
+            wrapper_radius = 4  # Same border radius as dropdown button
+            
+            # Position dropdown menu with 2px gap from button
+            dropdown_y = self.y_screen + self.height + gap
             total_height = len(self._items) * item_height
-
-            # Draw all items as one continuous shape with only outer corners rounded
-            # This ensures no gaps between items
+            
+            # Calculate wrapper dimensions
+            wrapper_width = self.width
+            wrapper_height = total_height + (wrapper_padding * 2) + (wrapper_border * 2)
+            wrapper_x = self.x_screen
+            wrapper_y = dropdown_y
+            
+            # Inner content area (inside padding and border)
+            inner_x = wrapper_x + wrapper_border + wrapper_padding
+            inner_y = wrapper_y + wrapper_border + wrapper_padding
+            inner_width = wrapper_width - (wrapper_border * 2) - (wrapper_padding * 2)
+            inner_height = total_height
+            
+            # Draw wrapper background with rounded corners (use menu background color)
             draw_rounded_rect(
-                self.x_screen, dropdown_y, self.width, total_height,
-                4, self._bg_color, segments=16
+                wrapper_x, wrapper_y, wrapper_width, wrapper_height,
+                wrapper_radius, self._menu_bg_color, segments=16
+            )
+            
+            # Draw wrapper border
+            self._draw_rounded_border(
+                wrapper_x, wrapper_y, wrapper_width, wrapper_height,
+                wrapper_radius, (0.329, 0.329, 0.329, 1.0), wrapper_border
             )
 
-            # Draw active (selected) item with blue background
-            if 0 <= self._selected_index < len(self._items) and self._selected_index != self._hovered_item_index:
-                active_item_y = dropdown_y + (self._selected_index * item_height)
-                # Draw active item background
-                if DrawConstants.anti_aliased_rect_shader is not None:
-                    viewport = gpu.state.viewport_get()
-                    viewport_width = viewport[2] if len(viewport) > 2 else 1920
-                    viewport_height = viewport[3] if len(viewport) > 3 else 1080
+            # Draw all items with menu background color and rounded corners
+            item_radius = 2  # Half the size of dropdown button radius (4px)
+            for i in range(len(self._items)):
+                item_y = inner_y + (i * item_height)
+                # Draw each item with menu background color and rounded corners
+                draw_rounded_rect(
+                    inner_x, item_y, inner_width, item_height,
+                    item_radius, self._menu_bg_color, segments=16
+                )
 
-                    if len(self._active_bg_color) == 3:
-                        color_rgba = (self._active_bg_color[0], self._active_bg_color[1], self._active_bg_color[2], 1.0)
-                    else:
-                        color_rgba = self._active_bg_color
-
-                    gpu.state.blend_set('ALPHA')
-                    aa_rect_shader = DrawConstants.anti_aliased_rect_shader
-                    aa_rect_shader.bind()
-                    aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
-                    aa_rect_shader.uniform_float("color", color_rgba)
-                    aa_rect_shader.uniform_float("edgeSoftness", 1.0)
-                    aa_rect_shader.uniform_float("rectPos", (self.x_screen, active_item_y))
-                    aa_rect_shader.uniform_float("rectSize", (self.width, item_height))
-                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
-                    gpu.state.blend_set('NONE')
-                else:
-                    # Fallback
-                    gpu.state.blend_set('ALPHA')
-                    shader = DrawConstants.uniform_shader
-                    shader.bind()
-                    shader.uniform_float("color", self._active_bg_color)
-                    with gpu.matrix.push_pop():
-                        gpu.matrix.translate((self.x_screen, active_item_y))
-                        gpu.matrix.scale((self.width, item_height))
-                        DrawConstants.rect_batch_h.draw(shader)
-                    gpu.state.blend_set('NONE')
+            # Draw active (selected) item with hover color background
+            # Only show background when no item is being hovered AND we haven't ever hovered
+            if 0 <= self._selected_index < len(self._items) and self._hovered_item_index == -1 and not self._has_ever_hovered:
+                active_item_y = inner_y + (self._selected_index * item_height)
+                item_radius = 2  # Half the size of dropdown button radius (4px)
+                # Draw active item background with all corners rounded (2px radius)
+                draw_rounded_rect(
+                    inner_x, active_item_y, inner_width, item_height,
+                    item_radius, self._active_bg_color, segments=16
+                )
 
             # Now draw hovered item on top with different color (takes priority over active)
             if 0 <= self._hovered_item_index < len(self._items):
-                hovered_item_y = dropdown_y + (self._hovered_item_index * item_height)
-                # Draw hovered item background (will cover the base color and active color)
-                if DrawConstants.anti_aliased_rect_shader is not None:
-                    viewport = gpu.state.viewport_get()
-                    viewport_width = viewport[2] if len(viewport) > 2 else 1920
-                    viewport_height = viewport[3] if len(viewport) > 3 else 1080
-
-                    if len(self._hover_bg_color) == 3:
-                        color_rgba = (self._hover_bg_color[0], self._hover_bg_color[1], self._hover_bg_color[2], 1.0)
-                    else:
-                        color_rgba = self._hover_bg_color
-
-                    gpu.state.blend_set('ALPHA')
-                    aa_rect_shader = DrawConstants.anti_aliased_rect_shader
-                    aa_rect_shader.bind()
-                    aa_rect_shader.uniform_float("viewportSize", (viewport_width, viewport_height))
-                    aa_rect_shader.uniform_float("color", color_rgba)
-                    aa_rect_shader.uniform_float("edgeSoftness", 1.0)
-                    aa_rect_shader.uniform_float("rectPos", (self.x_screen, hovered_item_y))
-                    aa_rect_shader.uniform_float("rectSize", (self.width, item_height))
-                    DrawConstants.circle_quad_batch.draw(aa_rect_shader)
-                    gpu.state.blend_set('NONE')
-                else:
-                    # Fallback
-                    gpu.state.blend_set('ALPHA')
-                    shader = DrawConstants.uniform_shader
-                    shader.bind()
-                    shader.uniform_float("color", self._hover_bg_color)
-                    with gpu.matrix.push_pop():
-                        gpu.matrix.translate((self.x_screen, hovered_item_y))
-                        gpu.matrix.scale((self.width, item_height))
-                        DrawConstants.rect_batch_h.draw(shader)
-                    gpu.state.blend_set('NONE')
+                hovered_item_y = inner_y + (self._hovered_item_index * item_height)
+                item_radius = 2  # Half the size of dropdown button radius (4px)
+                # Draw hovered item background with all corners rounded (2px radius)
+                draw_rounded_rect(
+                    inner_x, hovered_item_y, inner_width, item_height,
+                    item_radius, self._hover_bg_color, segments=16
+                )
 
             # Draw item text for all items
             for i, item in enumerate(self._items):
-                item_y = dropdown_y + (i * item_height)
+                item_y = inner_y + (i * item_height)
 
                 # Draw item text
                 blf.size(0, self._text_size)
-                text_x = self.x_screen + 8
+                text_x = inner_x + 8
                 text_y = item_y + (item_height / 2) - 6
 
                 blf.position(0, text_x, text_y, 0)
                 blf.color(0, 1.0, 1.0, 1.0, 1.0)
                 blf.draw(0, item)
+
+            # Draw check icon for selected item (always visible, regardless of hover)
+            if 0 <= self._selected_index < len(self._items):
+                selected_item_y = inner_y + (self._selected_index * item_height)
+                self._draw_check_icon(inner_x, selected_item_y, item_height, inner_width)
 
     def mouse_move(self, x, y):
         """Handle mouse move event to track hover state."""
@@ -1333,31 +1405,53 @@ class BL_UI_Dropdown(BL_UI_Widget):
 
         # Check which dropdown item is being hovered
         item_height = 24
-        dropdown_y = self.y_screen + self.height
+        gap = 2  # 2px gap between button and dropdown menu
+        wrapper_padding = 2  # 2px padding inside wrapper
+        wrapper_border = 1  # 1px border
+        
+        # Position dropdown menu with 2px gap from button
+        dropdown_y = self.y_screen + self.height + gap
+        inner_y = dropdown_y + wrapper_border + wrapper_padding
+        inner_x = self.x_screen + wrapper_border + wrapper_padding
+        inner_width = self.width - (wrapper_border * 2) - (wrapper_padding * 2)
 
         self._hovered_item_index = -1  # Reset
         for i, item in enumerate(self._items):
-            item_y = dropdown_y + (i * item_height)
-            if (self.x_screen <= x <= (self.x_screen + self.width) and
+            item_y = inner_y + (i * item_height)
+            if (inner_x <= x <= (inner_x + inner_width) and
                     item_y <= y <= (item_y + item_height)):
                 self._hovered_item_index = i
+                self._has_ever_hovered = True  # Mark that we've hovered
                 break
 
     def mouse_down(self, x, y):
         """Handle mouse down event."""
         if self.is_in_rect(x, y):
+            was_open = self._is_open
             self._is_open = not self._is_open
             if not self._is_open:
                 self._hovered_item_index = -1  # Reset hover when closing
+                self._has_ever_hovered = False  # Reset hover flag when closing
+            elif not was_open:
+                # Just opened - reset hover flag
+                self._has_ever_hovered = False
             return True
         elif self._is_open:
             # Check if clicked on an item in the dropdown
             item_height = 24
-            dropdown_y = self.y_screen + self.height
+            gap = 2  # 2px gap between button and dropdown menu
+            wrapper_padding = 2  # 2px padding inside wrapper
+            wrapper_border = 1  # 1px border
+            
+            # Position dropdown menu with 2px gap from button
+            dropdown_y = self.y_screen + self.height + gap
+            inner_y = dropdown_y + wrapper_border + wrapper_padding
+            inner_x = self.x_screen + wrapper_border + wrapper_padding
+            inner_width = self.width - (wrapper_border * 2) - (wrapper_padding * 2)
 
             for i, item in enumerate(self._items):
-                item_y = dropdown_y + (i * item_height)
-                if (self.x_screen <= x <= (self.x_screen + self.width) and
+                item_y = inner_y + (i * item_height)
+                if (inner_x <= x <= (inner_x + inner_width) and
                         item_y <= y <= (item_y + item_height)):
                     self._selected_index = i
                     self._is_open = False
@@ -2222,6 +2316,7 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         thumbnail_size = 128
         thumbnail_spacing = 8
         panel_padding = 12
+        label_height = 20  # Space for HDRI name label under each thumbnail
 
         # Calculate grid layout (8 thumbnails in a single row)
         thumbnails_per_row = 8
@@ -2230,7 +2325,10 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         panel_width = (thumbnail_size * thumbnails_per_row +
                       thumbnail_spacing * (thumbnails_per_row - 1) +
                       panel_padding * 2)
+        # Panel height: thumbnails + labels + spacing between rows + padding top and bottom
+        # For single row: thumbnail_size + label_height + panel_padding * 2
         panel_height = (thumbnail_size * num_rows +
+                       label_height * num_rows +
                        thumbnail_spacing * (num_rows - 1) +
                        panel_padding * 2)
 
@@ -2246,7 +2344,11 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
             col = idx % thumbnails_per_row
 
             btn_x = x + panel_padding + col * (thumbnail_size + thumbnail_spacing)
-            btn_y = y + panel_padding + row * (thumbnail_size + thumbnail_spacing)
+            # Position buttons from top of panel
+            # In Blender, y=0 is at bottom, so panel top is at y + panel_height
+            # Button bottom should be at: panel_top - panel_padding - thumbnail_size
+            # For row 0: y + panel_height - panel_padding - thumbnail_size
+            btn_y = y + panel_height - panel_padding - thumbnail_size - row * (thumbnail_size + label_height + thumbnail_spacing)
 
             btn = BL_UI_HDRIThumbnailButton(btn_x, btn_y, thumbnail_size,
                                            thumb_path, hdr_path, hdri_name)
@@ -2290,6 +2392,58 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         # Draw all thumbnail buttons
         for btn in self.thumbnail_buttons:
             btn.draw()
+        
+        # Draw HDRI name labels under each thumbnail
+        thumbnail_size = 128
+        label_height = 20
+        label_gap = 4  # Small gap between thumbnail and label
+        panel_padding = 12
+        
+        for btn in self.thumbnail_buttons:
+            # Calculate label position (centered under thumbnail)
+            label_x = btn.x_screen
+            # Position label below the thumbnail button
+            # btn.y_screen is the bottom of the button (Y=0 at bottom in Blender)
+            # So label should be at: button bottom - gap - label_height
+            label_y = btn.y_screen - label_gap - label_height
+            
+            # Get HDRI name and truncate if needed
+            hdri_name = btn.hdri_name
+            max_width = thumbnail_size
+            
+            # Measure text width
+            blf.size(0, 12)  # Font size for labels
+            text_width, text_height = blf.dimensions(0, hdri_name)
+            
+            # Truncate text if too long
+            if text_width > max_width - 8:  # Leave 4px padding on each side
+                # Calculate how many characters fit
+                ellipsis = "..."
+                ellipsis_width, _ = blf.dimensions(0, ellipsis)
+                available_width = max_width - 8 - ellipsis_width
+                
+                # Binary search for fitting text
+                low, high = 0, len(hdri_name)
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    test_text = hdri_name[:mid]
+                    test_width, _ = blf.dimensions(0, test_text)
+                    if test_width <= available_width:
+                        low = mid
+                    else:
+                        high = mid - 1
+                
+                hdri_name = hdri_name[:low] + ellipsis
+            
+            # Draw label text (centered)
+            text_width, text_height = blf.dimensions(0, hdri_name)
+            text_x = label_x + (thumbnail_size - text_width) / 2
+            # Position text vertically centered in label area
+            text_y = label_y + (label_height - text_height) / 2
+            
+            blf.position(0, text_x, text_y, 0)
+            blf.color(0, 0.8, 0.8, 0.8, 1.0)  # Light gray text
+            blf.draw(0, hdri_name)
 
     def mouse_down(self, x, y):
         """Handle mouse down events."""
@@ -2336,6 +2490,7 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
         thumbnail_size = 128
         thumbnail_spacing = 8
         panel_padding = 12
+        label_height = 20  # Space for HDRI name label under each thumbnail
         thumbnails_per_row = 8  # Single row with 8 thumbnails
 
         for idx, btn in enumerate(self.thumbnail_buttons):
@@ -2343,7 +2498,11 @@ class BL_UI_HDRIPanel(BL_UI_Widget):
             col = idx % thumbnails_per_row
 
             btn_x = x + panel_padding + col * (thumbnail_size + thumbnail_spacing)
-            btn_y = y + panel_padding + row * (thumbnail_size + thumbnail_spacing)
+            # Position buttons from top of panel
+            # In Blender, y=0 is at bottom, so panel top is at y + self.height
+            # Button bottom should be at: panel_top - panel_padding - thumbnail_size
+            # For row 0: y + self.height - panel_padding - thumbnail_size
+            btn_y = y + self.height - panel_padding - thumbnail_size - row * (thumbnail_size + label_height + thumbnail_spacing)
 
             btn.x = btn_x
             btn.y = btn_y
@@ -2385,19 +2544,56 @@ class BL_UI_Slider(BL_UI_Widget):
         # Min/Max LOD markers (set from toolbar)
         self._min_lod = None
         self._max_lod = None
+        self._object_max_lod = None  # Object's maximum available LOD level
+        self._auto_lod_enabled = False  # Auto LOD enabled state
+        
+        # Number label properties
+        self._number_label_size = 8  # Font size for number labels (smaller)
+        self._number_label_gap = 3  # Vertical spacing between numbers and markers
+        self._gray_number_color = (0.5, 0.5, 0.5, 1.0)  # Gray for most numbers
+        self._white_number_color = (1.0, 1.0, 1.0, 1.0)  # White for 0 and MAX LOD
+        self._orange_warning_color = (1.0, 0.5, 0.0, 1.0)  # Orange for warning state
 
     def set_available_lods(self, lod_levels):
         """Set which LOD levels are available (enabled markers)."""
+        print(f"🔧 [SLIDER] set_available_lods: {lod_levels}")
         self._available_lods = lod_levels
 
     def set_min_max_lods(self, min_lod, max_lod):
         """Set the min and max LOD values for displaying markers above the track."""
-        self._min_lod = min_lod
-        self._max_lod = max_lod
+        # Only update if values actually changed to avoid unnecessary recalculations
+        if self._min_lod != min_lod or self._max_lod != max_lod:
+            print(f"🔧 [SLIDER] set_min_max_lods: min_lod={min_lod}, max_lod={max_lod} (was: min={self._min_lod}, max={self._max_lod})")
+            self._min_lod = min_lod
+            self._max_lod = max_lod
+            # Clear marker positions to force recalculation on next draw
+            self._marker_positions = []
+            print(f"🔧 [SLIDER] Available LODs: {self._available_lods}")
+            print(f"🔧 [SLIDER] Auto LOD enabled: {self._auto_lod_enabled}")
+            
+            # Calculate what should be auto-generated for debugging
+            if self._auto_lod_enabled and self._available_lods:
+                auto_gen = []
+                for lod in range(min_lod, max_lod + 1):
+                    if lod not in self._available_lods:
+                        auto_gen.append(lod)
+                print(f"🔧 [SLIDER] LODs in range [{min_lod}-{max_lod}] that need auto-gen: {auto_gen}")
+
+    def set_object_max_lod(self, max_lod):
+        """Set the object's maximum available LOD level."""
+        self._object_max_lod = max_lod
+        # Don't change _max_value - keep it at 7 to show all markers
+        # Clear marker positions to force recalculation
+        self._marker_positions = []
 
     def set_loading_state(self, is_loading):
         """Set the loading state of the slider (affects handle color)."""
         self._is_loading = is_loading
+
+    def set_auto_lod_enabled(self, enabled):
+        """Set the Auto LOD enabled state (affects orange indicators)."""
+        print(f"🔧 [SLIDER] set_auto_lod_enabled: {enabled}")
+        self._auto_lod_enabled = enabled
 
     def set_value(self, value):
         """Set the slider value (LOD level 0-7), clamped to min/max range."""
@@ -2405,9 +2601,15 @@ class BL_UI_Slider(BL_UI_Widget):
         value = max(self._min_value, min(self._max_value, value))
 
         # Then clamp to min/max LOD range if set
-        if self._min_lod is not None:
-            value = max(value, self._min_lod)
-        if self._max_lod is not None:
+        # The knob should slide in the range from 0 to maxLOD (including auto-generated LODs)
+        # Position 0 corresponds to Quixel LOD minLOD (shown at bottom)
+        # Position maxLOD corresponds to the max LOD (shown at top)
+        if self._min_lod is not None and self._max_lod is not None:
+            # Allow sliding from position 0 to position maxLOD (to include auto-generated LODs)
+            value = max(0, min(value, self._max_lod))
+        elif self._min_lod is not None:
+            value = max(0, value)  # Start from position 0
+        elif self._max_lod is not None:
             value = min(value, self._max_lod)
 
         self._current_value = value
@@ -2418,8 +2620,11 @@ class BL_UI_Slider(BL_UI_Widget):
 
     def _calculate_marker_positions(self):
         """Calculate X positions for each LOD marker."""
-        if not self._marker_positions:
-            num_markers = self._max_value - self._min_value + 1
+        # Always show markers from 0 to 7 (full range)
+        num_markers = self._max_value - self._min_value + 1
+        
+        # Recalculate if positions don't exist or if the number of markers has changed
+        if not self._marker_positions or len(self._marker_positions) != num_markers:
             usable_width = self.width - (self._handle_radius * 2)
             spacing = usable_width / (num_markers - 1) if num_markers > 1 else 0
 
@@ -2453,9 +2658,15 @@ class BL_UI_Slider(BL_UI_Widget):
                 closest_value = i
 
         # Clamp value to min/max LOD range
-        if self._min_lod is not None:
-            closest_value = max(closest_value, self._min_lod)
-        if self._max_lod is not None:
+        # The knob should slide in the range from 0 to maxLOD (including auto-generated LODs)
+        # Position 0 corresponds to Quixel LOD minLOD (shown at bottom)
+        # Position maxLOD corresponds to the max LOD (shown at top)
+        if self._min_lod is not None and self._max_lod is not None:
+            # Allow sliding from position 0 to position maxLOD (to include auto-generated LODs)
+            closest_value = max(0, min(closest_value, self._max_lod))
+        elif self._min_lod is not None:
+            closest_value = max(0, closest_value)  # Start from position 0
+        elif self._max_lod is not None:
             closest_value = min(closest_value, self._max_lod)
 
         return closest_value
@@ -2468,16 +2679,51 @@ class BL_UI_Slider(BL_UI_Widget):
         # Recalculate marker positions if needed
         self._calculate_marker_positions()
 
+        # Determine if we're in warning state (min_lod > 0)
+        is_warning_state = (self._min_lod is not None and self._min_lod > 0)
+        
+        # Determine which LODs need auto-generation or are missing
+        # Preview LOD i maps to Quixel LOD (minLOD + i)
+        # We need to check all preview LODs from 0 to maxLOD (the slider positions)
+        # If the Quixel LOD they map to is not in available_lods, it needs auto-generation or is missing
+        auto_generated_lods = set()
+        missing_lods = set()  # LODs that are missing (not in available_lods)
+        if self._min_lod is not None and self._max_lod is not None and self._available_lods is not None:
+            # Check each preview LOD position from 0 to maxLOD
+            # Preview LOD i maps to Quixel LOD (minLOD + i)
+            for preview_lod in range(0, self._max_lod + 1):
+                quixel_lod = self._min_lod + preview_lod
+                # Check if this Quixel LOD is in available_lods
+                is_missing = False
+                if isinstance(self._available_lods, (list, set, tuple)):
+                    if quixel_lod not in self._available_lods:
+                        is_missing = True
+                elif not self._available_lods:
+                    # If available_lods is empty or falsy, all LODs are missing
+                    is_missing = True
+                
+                if is_missing:
+                    missing_lods.add(quixel_lod)
+                    # Only add to auto_generated_lods if autoLOD is enabled
+                    if self._auto_lod_enabled:
+                        auto_generated_lods.add(quixel_lod)
+
         # Draw track (split into segments based on min/max range)
         track_y = self.y_screen + (self.height - self._track_height) / 2
         track_start_x = self.x_screen + self._handle_radius
         track_full_width = self.width - (self._handle_radius * 2)
 
-        # Determine if we have min/max LOD set
+        # Draw track - always full width from start to end
+        track_end_x = track_start_x + track_full_width
+        
         if self._min_lod is not None and self._max_lod is not None and len(self._marker_positions) > 0:
-            # Calculate positions for the three segments
-            min_lod_x = self._marker_positions[self._min_lod] if self._min_lod < len(self._marker_positions) else track_start_x
-            max_lod_x = self._marker_positions[self._max_lod] if self._max_lod < len(self._marker_positions) else track_start_x + track_full_width
+            # Calculate positions
+            # Min marker at position 0 (where bottom shows minLOD, top shows 0)
+            # Max marker at position maxLOD (where top shows maxLOD, aligned with top row)
+            min_marker_index = 0
+            max_marker_index = self._max_lod  # For the max marker (aligned with top row)
+            min_lod_x = self._marker_positions[min_marker_index] if min_marker_index < len(self._marker_positions) else track_start_x
+            max_lod_x = self._marker_positions[max_marker_index] if max_marker_index < len(self._marker_positions) else track_end_x
 
             # Segment 1: Start to min_lod (darker gray)
             if min_lod_x > track_start_x:
@@ -2492,20 +2738,207 @@ class BL_UI_Slider(BL_UI_Widget):
                     segments=8
                 )
 
-            # Segment 2: min_lod to max_lod (normal color)
-            segment2_width = max_lod_x - min_lod_x
-            draw_rounded_rect(
-                min_lod_x,
-                track_y,
-                segment2_width,
-                self._track_height,
-                2,
-                self._track_color,
-                segments=8
-            )
+            # Find the first orange segment position (if any)
+            first_orange_preview_lod = None
+            for preview_lod in range(0, self._max_lod + 1):
+                quixel_lod = self._min_lod + preview_lod
+                if quixel_lod in auto_generated_lods:
+                    first_orange_preview_lod = preview_lod
+                    break
 
-            # Segment 3: max_lod to end (darker gray)
-            track_end_x = track_start_x + track_full_width
+            # Segment 2: min_lod to max_lod - draw per preview LOD level
+            # Draw each preview LOD segment separately, using orange for auto-generated ones
+            # Preview LOD i maps to Quixel LOD (minLOD + i)
+            # Position i shows Preview LOD i (top) and Quixel LOD (minLOD + i) (bottom)
+            for preview_lod in range(0, self._max_lod + 1):
+                quixel_lod = self._min_lod + preview_lod
+                # Calculate start position: where this preview LOD is shown
+                segment_start_index = preview_lod
+                
+                # Ensure we have valid indices
+                if segment_start_index >= len(self._marker_positions):
+                    continue
+                
+                segment_start_x = self._marker_positions[segment_start_index]
+                
+                # Calculate end position: next preview LOD or max marker position
+                if preview_lod < self._max_lod:
+                    segment_end_index = preview_lod + 1
+                    if segment_end_index < len(self._marker_positions):
+                        segment_end_x = self._marker_positions[segment_end_index]
+                    else:
+                        # Use max marker position if next index is out of range
+                        segment_end_x = max_lod_x
+                    segment_width = segment_end_x - segment_start_x
+                else:
+                    # Last preview LOD segment - extend to max marker position (at position maxLOD)
+                    segment_width = max_lod_x - segment_start_x
+                
+                # Ensure segment width is positive
+                if segment_width <= 0:
+                    continue
+                
+                # Use orange if this Quixel LOD needs auto-generation, otherwise normal color
+                # IMPORTANT: Check if this Quixel LOD needs auto-generation
+                is_auto_generated = quixel_lod in auto_generated_lods
+                if is_auto_generated:
+                    segment_color = self._orange_warning_color
+                else:
+                    segment_color = self._track_color
+                
+                # Draw the segment
+                draw_rounded_rect(
+                    segment_start_x,
+                    track_y,
+                    segment_width,
+                    self._track_height,
+                    2,
+                    segment_color,
+                    segments=8
+                )
+                
+                # If this is the first orange segment and autoLOD is enabled, draw gradient from previous marker to this one
+                if preview_lod == first_orange_preview_lod and self._auto_lod_enabled:
+                    if preview_lod > 0:
+                        # Draw gradient from previous marker (indicator 1) to this orange marker (indicator 2)
+                        prev_segment_start_index = preview_lod - 1
+                        if prev_segment_start_index < len(self._marker_positions):
+                            prev_segment_start_x = self._marker_positions[prev_segment_start_index]
+                            gradient_width = segment_start_x - prev_segment_start_x
+                            if gradient_width > 0:
+                                # Draw full gradient from previous marker to orange marker
+                                gradient_segments = 30  # More segments for smoother gradient
+                                for i in range(gradient_segments):
+                                    t = i / (gradient_segments - 1) if gradient_segments > 1 else 0
+                                    blend_color = (
+                                        self._track_color[0] * (1 - t) + self._orange_warning_color[0] * t,
+                                        self._track_color[1] * (1 - t) + self._orange_warning_color[1] * t,
+                                        self._track_color[2] * (1 - t) + self._orange_warning_color[2] * t,
+                                        self._track_color[3] * (1 - t) + self._orange_warning_color[3] * t
+                                    )
+                                    seg_width = gradient_width / gradient_segments
+                                    draw_rounded_rect(
+                                        prev_segment_start_x + i * seg_width,
+                                        track_y,
+                                        seg_width,
+                                        self._track_height,
+                                        2,
+                                        blend_color,
+                                        segments=8
+                                    )
+                    else:
+                        # First orange segment is at position 0, draw gradient from min_lod_x to first marker
+                        orange_segment_width = segment_start_x - min_lod_x
+                        if orange_segment_width > 0:
+                            # Draw full gradient from min_lod_x to orange marker
+                            gradient_segments = 30  # More segments for smoother gradient
+                            for i in range(gradient_segments):
+                                t = i / (gradient_segments - 1) if gradient_segments > 1 else 0
+                                blend_color = (
+                                    self._track_color[0] * (1 - t) + self._orange_warning_color[0] * t,
+                                    self._track_color[1] * (1 - t) + self._orange_warning_color[1] * t,
+                                    self._track_color[2] * (1 - t) + self._orange_warning_color[2] * t,
+                                    self._track_color[3] * (1 - t) + self._orange_warning_color[3] * t
+                                )
+                                seg_width = orange_segment_width / gradient_segments
+                                draw_rounded_rect(
+                                    min_lod_x + i * seg_width,
+                                    track_y,
+                                    seg_width,
+                                    self._track_height,
+                                    2,
+                                    blend_color,
+                                    segments=8
+                                )
+                
+                # Draw indicator (orange dot or "?" question mark) underneath segments at marker position
+                # Check if this LOD is missing (not in available_lods)
+                is_missing = quixel_lod in missing_lods
+                if is_missing:
+                    # Calculate position to align with bottom row numbers (same as Quixel LOD numbers)
+                    marker_y = self.y_screen + (self.height - 12) / 2
+                    blf.size(0, self._number_label_size)  # Use same font size as numbers
+                    question_text = "?"
+                    text_width, text_height = blf.dimensions(0, question_text)
+                    number_y = marker_y - self._number_label_gap - text_height  # Same position calculation as numbers
+                    
+                    if self._auto_lod_enabled:
+                        # Draw orange dot when auto LOD is enabled (3px higher than "?" position)
+                        dot_radius = 2
+                        self._draw_circle(segment_start_x, number_y + 3, dot_radius, self._orange_warning_color)
+                    else:
+                        # Draw "?" question mark when auto LOD is disabled
+                        question_x = segment_start_x - text_width / 2
+                        blf.position(0, question_x, number_y, 0)
+                        blf.color(0, 0.7, 0.7, 0.7, 1.0)  # Light gray for question mark
+                        blf.draw(0, question_text)
+                
+                # Always draw the segment, even if width is small
+                draw_rounded_rect(
+                    segment_start_x,
+                    track_y,
+                    segment_width,
+                    self._track_height,
+                    2,
+                    segment_color,
+                    segments=8
+                )
+
+            # Draw indicator (orange dot or "?") for last LOD if it's missing
+            if self._max_lod is not None:
+                last_quixel_lod = self._min_lod + self._max_lod
+                if last_quixel_lod in missing_lods:
+                    # Calculate position to align with bottom row numbers (same as Quixel LOD numbers)
+                    marker_y = self.y_screen + (self.height - 12) / 2
+                    blf.size(0, self._number_label_size)  # Use same font size as numbers
+                    question_text = "?"
+                    text_width, text_height = blf.dimensions(0, question_text)
+                    number_y = marker_y - self._number_label_gap - text_height  # Same position calculation as numbers
+                    
+                    if self._auto_lod_enabled:
+                        # Draw orange dot when auto LOD is enabled (3px higher than "?" position)
+                        dot_radius = 2
+                        self._draw_circle(max_lod_x, number_y + 3, dot_radius, self._orange_warning_color)
+                    else:
+                        # Draw "?" question mark when auto LOD is disabled
+                        question_x = max_lod_x - text_width / 2
+                        blf.position(0, question_x, number_y, 0)
+                        blf.color(0, 0.7, 0.7, 0.7, 1.0)  # Light gray for question mark
+                        blf.draw(0, question_text)
+                    
+                    # Draw gradient from previous marker to last orange marker if needed (only when autoLOD enabled)
+                    if self._auto_lod_enabled and self._max_lod > 0:
+                        prev_lod_quixel = self._min_lod + (self._max_lod - 1)
+                        if prev_lod_quixel not in auto_generated_lods:
+                            # Previous LOD is not orange, draw gradient
+                            prev_marker_index = self._max_lod - 1
+                            if prev_marker_index < len(self._marker_positions):
+                                prev_marker_x = self._marker_positions[prev_marker_index]
+                                gradient_width = max_lod_x - prev_marker_x
+                                if gradient_width > 0:
+                                    gradient_segments = 30  # More segments for smoother gradient
+                                    for i in range(gradient_segments):
+                                        t = i / (gradient_segments - 1) if gradient_segments > 1 else 0
+                                        blend_color = (
+                                            self._track_color[0] * (1 - t) + self._orange_warning_color[0] * t,
+                                            self._track_color[1] * (1 - t) + self._orange_warning_color[1] * t,
+                                            self._track_color[2] * (1 - t) + self._orange_warning_color[2] * t,
+                                            self._track_color[3] * (1 - t) + self._orange_warning_color[3] * t
+                                        )
+                                        seg_width = gradient_width / gradient_segments
+                                        draw_rounded_rect(
+                                            prev_marker_x + i * seg_width,
+                                            track_y,
+                                            seg_width,
+                                            self._track_height,
+                                            2,
+                                            blend_color,
+                                            segments=8
+                                        )
+
+            # Segment 3: max marker to end (darker gray)
+            # Preview LODs beyond maxLOD should NOT be auto-generated and should NOT be orange
+            # They are outside the range and should remain dark gray
             if max_lod_x < track_end_x:
                 segment3_width = track_end_x - max_lod_x
                 draw_rounded_rect(
@@ -2530,25 +2963,62 @@ class BL_UI_Slider(BL_UI_Widget):
             )
 
         # Draw markers
+        # Calculate min/max marker positions
+        # Min marker: aligned with bottom row (position 0 where bottom shows minLOD)
+        # Max marker: aligned with top row (position maxLOD where top shows maxLOD)
+        min_marker_index = 0 if self._min_lod is not None else None
+        max_marker_index = self._max_lod if self._max_lod is not None else None
+        
         for i, marker_x in enumerate(self._marker_positions):
-            is_min_lod = (self._min_lod is not None and i == self._min_lod)
-            is_max_lod = (self._max_lod is not None and i == self._max_lod)
+            is_min_lod = (min_marker_index is not None and i == min_marker_index)
+            is_max_lod = (max_marker_index is not None and i == max_marker_index)
             is_minmax = is_min_lod or is_max_lod
 
             # Check if marker is inside or outside min/max range
+            # Map marker index to Quixel LOD: position 0 = minLOD, position 1 = minLOD+1, etc.
+            # If min_lod is None, use marker index directly (no Quixel LOD mapping)
+            quixel_lod_for_marker = (self._min_lod + i) if self._min_lod is not None else i
             is_inside_range = True
             if self._min_lod is not None and self._max_lod is not None:
-                is_inside_range = (self._min_lod <= i <= self._max_lod)
+                is_inside_range = (self._min_lod <= quixel_lod_for_marker <= self._max_lod)
+            
+            # Check if this Quixel LOD needs auto-generation (only when autoLOD is enabled)
+            # Preview LOD i maps to Quixel LOD (minLOD + i)
+            quixel_lod_for_marker = (self._min_lod + i) if self._min_lod is not None else i
+            needs_auto_generation = (self._auto_lod_enabled and self._min_lod is not None and quixel_lod_for_marker in auto_generated_lods)
 
+            # Check if this preview LOD (top row) needs auto-generation
+            # Preview LOD i maps to Quixel LOD (minLOD + i) when minLOD is set
+            # ONLY mark as auto-generated if within minLOD to maxLOD range but not in available_lods
+            # Preview LODs beyond maxLOD should NOT be auto-generated and should NOT be orange
+            preview_lod_needs_auto = False
+            if self._auto_lod_enabled and self._min_lod is not None and self._max_lod is not None:
+                quixel_lod_for_preview = self._min_lod + i if self._min_lod is not None else i
+                # ONLY check if within the minLOD to maxLOD range
+                # Preview LODs beyond maxLOD are not part of the range and should not be orange
+                if self._min_lod <= quixel_lod_for_preview <= self._max_lod:
+                    # Check if this Quixel LOD needs auto-generation (not in available LODs)
+                    if self._available_lods:
+                        preview_lod_needs_auto = (quixel_lod_for_preview not in self._available_lods)
+                    else:
+                        preview_lod_needs_auto = True
+            
             # Determine marker properties based on type
+            # Priority: orange for auto-generation (only when autoLOD enabled) > minmax color > inside/outside range colors
             if is_minmax:
-                # Min/Max LOD markers: always use light gray color, extra tall
-                marker_color = self._minmax_marker_color
+                # Min/Max LOD markers: use orange if needs auto-generation (and autoLOD enabled), otherwise light gray
+                marker_color = self._orange_warning_color if (needs_auto_generation or preview_lod_needs_auto) else self._minmax_marker_color
                 marker_width = 3
                 marker_height = 16
             else:
-                # Regular LOD markers: darker gray outside range, normal gray inside
-                marker_color = self._marker_outside_range_color if not is_inside_range else self._marker_active_color
+                # Regular LOD markers: orange if needs auto-generation (and autoLOD enabled), otherwise normal colors
+                # Don't make missing LODs darker - use normal colors when autoLOD is disabled
+                if needs_auto_generation or preview_lod_needs_auto:
+                    marker_color = self._orange_warning_color
+                elif not is_inside_range:
+                    marker_color = self._marker_outside_range_color
+                else:
+                    marker_color = self._marker_active_color
                 marker_width = 2
                 marker_height = 12
 
@@ -2570,6 +3040,67 @@ class BL_UI_Slider(BL_UI_Widget):
             gpu.state.line_width_set(1.0)
             gpu.state.blend_set('NONE')
 
+        # Draw number labels above markers
+        # Top row always shows numbers 0, 1, 2, 3, 4, 5, 6, 7
+        blf.size(0, self._number_label_size)
+        for i, marker_x in enumerate(self._marker_positions):
+            # LOD number is the index (0, 1, 2, 3, 4, 5, 6, 7)
+            lod_number = i
+            
+            # Determine number color: white for 0 and maxLOD, gray for others
+            # Top numbers should NOT be orange - keep normal colors
+            if lod_number == 0 or (self._max_lod is not None and lod_number == self._max_lod):
+                number_color = self._white_number_color
+            else:
+                number_color = self._gray_number_color
+
+            # Calculate position above marker
+            marker_y = self.y_screen + (self.height - 12) / 2  # Use standard marker height for positioning
+            number_y = marker_y + 12 + self._number_label_gap  # Above the marker
+
+            # Center text horizontally on marker
+            number_text = str(lod_number)
+            text_width, text_height = blf.dimensions(0, number_text)
+            number_x = marker_x - text_width / 2
+
+            blf.position(0, number_x, number_y, 0)
+            blf.color(0, number_color[0], number_color[1], number_color[2], number_color[3])
+            blf.draw(0, number_text)
+
+        # Draw number labels below markers
+        # Bottom row always shows Quixel LOD levels (minLOD to maxLOD)
+        if self._min_lod is not None and self._max_lod is not None and len(self._marker_positions) > 0:
+            marker_y = self.y_screen + (self.height - 12) / 2
+            
+            # Draw numbers incrementing from MIN LOD
+            # Start from MIN LOD at position 0, increment normally
+            for i, marker_x in enumerate(self._marker_positions):
+                # Calculate the Quixel LOD number for this position
+                quixel_lod_number = self._min_lod + i
+                
+                # Stop if we exceed MAX LOD
+                if quixel_lod_number > self._max_lod:
+                    break
+                
+                # Determine number color: white for first (minLOD) and last (maxLOD), gray for others
+                is_first = (quixel_lod_number == self._min_lod)
+                is_last = (quixel_lod_number == self._max_lod)
+                if is_first or is_last:
+                    number_color = self._white_number_color
+                else:
+                    number_color = self._gray_number_color
+                
+                # Center text horizontally on marker
+                number_text = str(quixel_lod_number)
+                text_width, text_height = blf.dimensions(0, number_text)
+                number_x = marker_x - text_width / 2
+                number_y = marker_y - self._number_label_gap - text_height  # Below the marker
+                
+                blf.position(0, number_x, number_y, 0)
+                blf.color(0, number_color[0], number_color[1], 
+                         number_color[2], number_color[3])
+                blf.draw(0, number_text)
+
         # Draw handle
         handle_x = self._get_handle_position()
         handle_y = self.y_screen + self.height / 2
@@ -2588,8 +3119,9 @@ class BL_UI_Slider(BL_UI_Widget):
         # Draw handle circle
         self._draw_circle(handle_x, handle_y, self._handle_radius, handle_color)
 
-        # Draw white outline
-        self._draw_circle_outline(handle_x, handle_y, self._handle_radius, (1.0, 1.0, 1.0, 1.0), 2)
+        # Draw outline (always white - knob should never be orange)
+        outline_color = (1.0, 1.0, 1.0, 1.0)
+        self._draw_circle_outline(handle_x, handle_y, self._handle_radius, outline_color, 2)
 
     def _draw_circle(self, cx, cy, radius, color):
         """Draw a filled circle with anti-aliased edges."""
@@ -2713,13 +3245,15 @@ class BL_UI_Slider(BL_UI_Widget):
             self._is_dragging = True
             return True
 
-        # Also allow clicking on track to jump to position
+        # Also allow clicking on track/markers to jump to position and enable dragging
         if self.is_in_rect(x, y):
             new_value = self._value_from_position(x)
             if new_value != self._current_value:
                 self._current_value = new_value
                 if self.on_value_changed:
                     self.on_value_changed(self._current_value)
+            # Enable dragging so user can click and drag from any position on the slider
+            self._is_dragging = True
             return True
 
         return False
@@ -2782,10 +3316,17 @@ class ImportToolbar:
         self.top_background_panel = None
         self.lod_slider = None
         self.show_all_checkbox = None
+        self.floor_toggle = None
         self.wireframe_toggle = None
 
         # Bridge button (to launch Quixel Bridge and claim active)
         self.bridge_button = None
+
+        # Floor plane tracking
+        self.floor_obj = None
+        self.floor_mat = None
+        self.floor_enabled = False
+        self.previous_grid_settings = {}  # Store previous grid overlay settings
 
         # HDRI widgets
         self.hdri_toggle = None           # Main HDRI toggle button
@@ -2967,8 +3508,15 @@ class ImportToolbar:
         self.divider_y_start = panel_y + 8
         self.divider_y_end = panel_y + panel_height - 8
 
+        # Get addon directory for icon paths
+        addon_dir = Path(__file__).parent.parent
+
         # Create Min LOD dropdown (renamed from lod_dropdown)
         self.min_lod_dropdown = BL_UI_Dropdown(min_lod_dropdown_x, button_y, lod_dropdown_width, button_height)
+        # Set check icon path
+        check_icon_path = addon_dir / "assets" / "icons" / "check_16.png"
+        if check_icon_path.exists():
+            self.min_lod_dropdown._check_icon_path = str(check_icon_path)
         self.min_lod_dropdown.init(context)
         # Set items based on detected LOD levels (will be updated later)
         if self.lod_levels:
@@ -2978,6 +3526,9 @@ class ImportToolbar:
 
         # Create Max LOD dropdown (LOD0-LOD7, default LOD5)
         self.max_lod_dropdown = BL_UI_Dropdown(max_lod_dropdown_x, button_y, lod_dropdown_width, button_height)
+        # Set check icon path
+        if check_icon_path.exists():
+            self.max_lod_dropdown._check_icon_path = str(check_icon_path)
         self.max_lod_dropdown.init(context)
         self.max_lod_dropdown.set_items(["LOD0", "LOD1", "LOD2", "LOD3", "LOD4", "LOD5", "LOD6", "LOD7"])
         self.max_lod_dropdown._selected_index = 5  # Default to LOD5
@@ -3027,6 +3578,8 @@ class ImportToolbar:
         slider_width = 240
         slider_to_divider_gap = 8
         divider_spacing = 16  # Space for divider line
+        floor_button_size = button_height  # Square floor button
+        floor_button_gap = 4  # Gap between floor and wireframe
         wireframe_button_size = button_height  # Square button
         hdri_button_gap = 4  # Gap between wireframe and HDRI
         hdri_button_size = button_height  # Square HDRI button (same as wireframe)
@@ -3036,7 +3589,8 @@ class ImportToolbar:
 
         # Calculate top toolbar width
         top_content_width = (lod_label_width + label_to_slider_gap + slider_width +
-                            slider_to_divider_gap + divider_spacing + wireframe_button_size +
+                            slider_to_divider_gap + divider_spacing + floor_button_size +
+                            floor_button_gap + wireframe_button_size +
                             hdri_button_gap + hdri_total_width + top_right_padding)
         top_panel_width = top_content_width + panel_padding * 2
         top_panel_x = (area.width - top_panel_width) / 2
@@ -3053,7 +3607,8 @@ class ImportToolbar:
         lod_label_x = top_panel_x + panel_padding + 8  # 8px left padding
         slider_x = lod_label_x + lod_label_width + label_to_slider_gap
         top_divider_x = slider_x + slider_width + slider_to_divider_gap
-        wireframe_x = top_divider_x + divider_spacing
+        floor_x = top_divider_x + divider_spacing
+        wireframe_x = floor_x + floor_button_size + floor_button_gap
 
         # Store label position and divider position for drawing
         self.lod_slider_label_x = lod_label_x
@@ -3069,6 +3624,22 @@ class ImportToolbar:
         self.lod_slider = BL_UI_Slider(slider_x, top_widget_y, slider_width, button_height)
         self.lod_slider.init(context)
         self.lod_slider.on_value_changed = self._handle_slider_change
+
+        # Create floor toggle button
+        self.floor_toggle = BL_UI_ToggleButton(floor_x, top_widget_y, floor_button_size)
+        # Set icon path (fallback to "F" text if icon not found)
+        addon_dir = Path(__file__).parent.parent
+        floor_icon_path = addon_dir / "assets" / "icons" / "floor_32.png"
+        if floor_icon_path.exists():
+            self.floor_toggle.icon_path = str(floor_icon_path)
+        else:
+            # Fallback to text if icon not found
+            self.floor_toggle.icon_text = "F"
+        self.floor_toggle.on_toggle = self._handle_floor_toggle
+        self.floor_toggle.toggled = True  # Enabled by default
+        self.floor_toggle.init(context)
+        # Enable floor by default (this will create the floor and disable Blender's grid)
+        self._handle_floor_toggle(True)
 
         # Create wireframe toggle button
         self.wireframe_toggle = BL_UI_ToggleButton(wireframe_x, top_widget_y, wireframe_button_size)
@@ -3183,6 +3754,9 @@ class ImportToolbar:
         # Update visibility (this is the actual operation that was deferred)
         self.update_lod_visibility()
         
+        # Update text labels with Quixel LOD info
+        self._update_lod_text_labels()
+        
         # Clear loading state (blue handle)
         self.lod_loading_state = False
         if self.lod_slider:
@@ -3235,6 +3809,160 @@ class ImportToolbar:
                 area.tag_redraw()
 
         print("  🔲  Wireframe disabled")
+
+    def _handle_floor_toggle(self, toggled):
+        """Handle floor toggle button."""
+        import bpy
+        context = bpy.context
+        self.floor_enabled = toggled
+        print(f"  🟫  Floor {'enabled' if toggled else 'disabled'}")
+
+        if toggled:
+            # Save current grid overlay settings before disabling
+            self._save_grid_settings()
+
+            # Disable Blender's grid
+            self._disable_grid()
+
+            # Create floor plane if it doesn't exist
+            if self.floor_obj is None:
+                # Check if floor already exists in scene
+                existing_floor = bpy.data.objects.get("__QuixelFloor__")
+                if existing_floor:
+                    self.floor_obj = existing_floor
+                    self.floor_obj.hide_select = True  # Ensure selection is disabled
+                    self.floor_mat = bpy.data.materials.get("__QuixelFloorMaterial__")
+                    print(f"  🟫  Reusing existing floor plane")
+                else:
+                    # Create new floor plane
+                    try:
+                        if context is None or context.scene is None:
+                            print(f"  ⚠️  Cannot create floor: invalid context")
+                            return
+                        self.floor_obj, self.floor_mat = create_floor_plane(context)
+                        if self.floor_obj is None or self.floor_mat is None:
+                            print(f"  ⚠️  Failed to create floor plane")
+                            return
+                        print(f"  ✅  Created floor plane")
+                    except Exception as e:
+                        print(f"  ⚠️  Error creating floor plane: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return
+
+            # Show floor plane
+            if self.floor_obj:
+                # Ensure object is in current view layer
+                view_layer = context.view_layer
+                if self.floor_obj.name not in view_layer.objects:
+                    # Add object to view layer if it's not there
+                    view_layer.objects.link(self.floor_obj)
+                self.floor_obj.hide_set(False)
+                self.floor_obj.hide_viewport = False
+        else:
+            # Restore previous grid settings
+            self._restore_grid_settings()
+
+            # Hide floor plane
+            if self.floor_obj:
+                # Check if object is in current view layer before hiding
+                view_layer = context.view_layer
+                if self.floor_obj.name in view_layer.objects:
+                    self.floor_obj.hide_set(True)
+                # Always set hide_viewport (doesn't require view layer membership)
+                self.floor_obj.hide_viewport = True
+
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+    def _save_grid_settings(self):
+        """Save current grid overlay settings."""
+        import bpy
+        self.previous_grid_settings = {}
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        overlay = space.overlay
+                        self.previous_grid_settings = {
+                            'show_floor': overlay.show_floor,
+                            'show_axis_x': overlay.show_axis_x,
+                            'show_axis_y': overlay.show_axis_y,
+                            'show_axis_z': overlay.show_axis_z,
+                        }
+                        return
+
+    def _disable_grid(self):
+        """Disable Blender's grid overlay."""
+        import bpy
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        overlay = space.overlay
+                        overlay.show_floor = False
+                        overlay.show_axis_x = False
+                        overlay.show_axis_y = False
+                        overlay.show_axis_z = False
+
+    def _restore_grid_settings(self):
+        """Restore previous grid overlay settings."""
+        import bpy
+        # If no previous settings were saved, restore to defaults (all enabled)
+        if not self.previous_grid_settings:
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            overlay = space.overlay
+                            overlay.show_floor = True
+                            overlay.show_axis_x = True
+                            overlay.show_axis_y = True
+                            overlay.show_axis_z = True
+            return
+
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        overlay = space.overlay
+                        overlay.show_floor = self.previous_grid_settings.get('show_floor', True)
+                        overlay.show_axis_x = self.previous_grid_settings.get('show_axis_x', True)
+                        overlay.show_axis_y = self.previous_grid_settings.get('show_axis_y', True)
+                        overlay.show_axis_z = self.previous_grid_settings.get('show_axis_z', True)
+
+    def _disable_floor(self):
+        """Disable floor and restore grid settings."""
+        import bpy
+
+        # Hide floor plane
+        if self.floor_obj:
+            # Check if object is in current view layer before hiding
+            view_layer = bpy.context.view_layer
+            if self.floor_obj.name in view_layer.objects:
+                self.floor_obj.hide_set(True)
+            # Always set hide_viewport (doesn't require view layer membership)
+            self.floor_obj.hide_viewport = True
+            self.floor_obj.hide_viewport = True
+
+        # Restore grid settings
+        self._restore_grid_settings()
+
+        # Reset floor state
+        self.floor_enabled = False
+
+        # Reset toggle button visual state if it exists
+        if self.floor_toggle:
+            self.floor_toggle._toggled = False
+
+        # Force viewport update
+        for area in bpy.context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+        print("  🟫  Floor disabled")
 
 
     def _handle_hdri_toggle(self, toggled):
@@ -3329,6 +4057,23 @@ class ImportToolbar:
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
+
+    def _close_all_dropdowns(self, exclude_dropdown=None):
+        """Close all dropdown menus except the excluded one.
+        
+        Args:
+            exclude_dropdown: Dropdown to exclude from closing (optional)
+        """
+        if self.min_lod_dropdown and self.min_lod_dropdown != exclude_dropdown:
+            if self.min_lod_dropdown._is_open:
+                self.min_lod_dropdown._is_open = False
+                self.min_lod_dropdown._hovered_item_index = -1
+                self.min_lod_dropdown._has_ever_hovered = False
+        if self.max_lod_dropdown and self.max_lod_dropdown != exclude_dropdown:
+            if self.max_lod_dropdown._is_open:
+                self.max_lod_dropdown._is_open = False
+                self.max_lod_dropdown._hovered_item_index = -1
+                self.max_lod_dropdown._has_ever_hovered = False
 
     def _close_hdri_panel(self):
         """Close HDRI selection panel."""
@@ -3634,17 +4379,40 @@ class ImportToolbar:
         """Handle Auto LOD checkbox change."""
         self.auto_lod_enabled = checked
         print(f"Auto LOD {'enabled' if self.auto_lod_enabled else 'disabled'}")
+        # Update slider with Auto LOD state
+        if self.lod_slider:
+            self.lod_slider.set_auto_lod_enabled(checked)
 
     def update_lod_visibility(self):
         """Show/hide LODs based on slider position.
 
         OPTIMIZED: Uses attach roots as source of truth.
         Reads LOD level from custom property (instant), no name parsing needed!
+        Maps preview LOD position to Quixel LOD: quixel_lod = min_lod + preview_lod
         """
         import bpy
 
         if not self.attach_roots:
             return
+
+        # Get min LOD to calculate target Quixel LOD
+        min_lod = 0
+        if self.min_lod_dropdown:
+            min_lod_text = self.min_lod_dropdown.get_selected_item()
+            if min_lod_text:
+                import re
+                match = re.search(r'LOD(\d+)', min_lod_text)
+                if match:
+                    min_lod = int(match.group(1))
+
+        # Calculate target Quixel LOD from preview LOD position
+        # Preview LOD position maps to Quixel LOD: quixel_lod = min_lod + preview_lod
+        target_quixel_lod = min_lod + self.current_preview_lod
+        
+        print(f"🔍 [VISIBILITY] update_lod_visibility called:")
+        print(f"   - current_preview_lod (slider position): {self.current_preview_lod}")
+        print(f"   - min_lod: {min_lod}")
+        print(f"   - target_quixel_lod: {target_quixel_lod} (should show this Quixel LOD)")
 
         # Loop through each attach root (one per variation)
         for attach_root in self.attach_roots:
@@ -3654,18 +4422,73 @@ class ImportToolbar:
                 if child.type != 'MESH':
                     continue
 
-                # Read LOD level from custom property (instant access!)
-                lod_level = child.get("lod_level", 0)
+                # Read LOD level from custom property (this is the Quixel LOD)
+                quixel_lod = child.get("lod_level", 0)
 
-                # Use eye icon (hide_set) for instant local hiding - NOT monitor icon!
-                should_hide = (lod_level != self.current_preview_lod)
+                # Match by Quixel LOD, not preview LOD position
+                should_hide = (quixel_lod != target_quixel_lod)
                 child.hide_set(should_hide)
+                if not should_hide:
+                    print(f"   - Showing object: {child.name} (Quixel LOD {quixel_lod})")
 
         # Update text labels using eye icon
         if self.lod_text_objects:
-            for text_obj, lod_level in self.lod_text_objects:
-                should_hide = (lod_level != self.current_preview_lod)
+            for item in self.lod_text_objects:
+                # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level)
+                # lod_level here is the Quixel LOD stored with the text object
+                if isinstance(item, tuple) and len(item) >= 2:
+                    text_obj = item[0]
+                    text_quixel_lod = item[1]  # This is the Quixel LOD the text represents
+                else:
+                    continue
+                
+                # Always hide text objects below minLOD (regardless of target_quixel_lod)
+                if text_quixel_lod < min_lod:
+                    text_obj.hide_set(True)
+                    text_obj.hide_viewport = True
+                    # Also hide secondary text object if it exists
+                    secondary_text_name = f"{text_obj.name}_Secondary"
+                    if secondary_text_name in bpy.data.objects:
+                        secondary_obj = bpy.data.objects[secondary_text_name]
+                        secondary_obj.hide_set(True)
+                        secondary_obj.hide_viewport = True
+                    continue
+                
+                # Match by Quixel LOD, not preview LOD position
+                should_hide = (text_quixel_lod != target_quixel_lod)
                 text_obj.hide_set(should_hide)
+                text_obj.hide_viewport = should_hide
+                
+                # Also hide/show QUIXEL LOD text object
+                quixel_lod_text_name = f"QUIXEL LOD {text_quixel_lod}"
+                if quixel_lod_text_name in bpy.data.objects:
+                    quixel_obj = bpy.data.objects[quixel_lod_text_name]
+                    # Check if object is in current view layer before trying to hide it
+                    try:
+                        if quixel_obj.name in bpy.context.view_layer.objects:
+                            quixel_obj.hide_set(should_hide)
+                            quixel_obj.hide_viewport = should_hide
+                            print(f"   [VISIBILITY] QUIXEL LOD TEXT {quixel_lod_text_name} - should_hide: {should_hide}, actual hide: {quixel_obj.hide_get()}, viewport: {quixel_obj.hide_viewport}")
+                        else:
+                            # Object exists but not in view layer - ensure it's in a collection
+                            if quixel_obj.name not in bpy.context.collection.objects:
+                                bpy.context.collection.objects.link(quixel_obj)
+                            quixel_obj.hide_set(should_hide)
+                            quixel_obj.hide_viewport = should_hide
+                            print(f"   [VISIBILITY] QUIXEL LOD TEXT {quixel_lod_text_name} - added to collection, should_hide: {should_hide}")
+                    except RuntimeError as e:
+                        print(f"   [VISIBILITY] Error hiding QUIXEL LOD TEXT {quixel_lod_text_name}: {e}")
+                        # Try to add to collection and hide
+                        try:
+                            if quixel_obj.name not in bpy.context.collection.objects:
+                                bpy.context.collection.objects.link(quixel_obj)
+                            quixel_obj.hide_set(should_hide)
+                            quixel_obj.hide_viewport = should_hide
+                        except:
+                            pass
+                
+                if not should_hide:
+                    print(f"   - Showing text: {text_obj.name} (Quixel LOD {text_quixel_lod})")
 
         # Tag viewport for redraw
         for area in bpy.context.screen.areas:
@@ -4297,27 +5120,68 @@ class ImportToolbar:
             self.min_lod_dropdown.set_items(items)
             # Set callback for when dropdown selection changes
             self.min_lod_dropdown.on_change = self._on_lod_selection_changed
-            # Dropdown population prints removed to reduce console clutter
             # Default to lowest LOD
             self.selected_lod_level = self.lod_levels[0] if self.lod_levels else 0
 
         # Update LOD slider with available LODs
         if self.lod_slider and self.lod_levels:
             self.lod_slider.set_available_lods(self.lod_levels)
+            # Pass object's maximum LOD to slider
+            max_lod = max(self.lod_levels)
+            self.lod_slider.set_object_max_lod(max_lod)
             # Set slider to lowest available LOD
             lowest_lod = self.lod_levels[0] if self.lod_levels else 0
             self.lod_slider.set_value(lowest_lod)
             self.current_preview_lod = lowest_lod
             self.lod_slider_label_text = f"LOD{lowest_lod}"
-            # Slider initialization print removed to reduce console clutter
 
             # Initialize min/max markers on slider
             self._update_slider_minmax_markers()
+    
+    def set_max_lod(self, max_lod):
+        """Set the max LOD dropdown to the specified LOD level.
+        
+        Args:
+            max_lod: Maximum LOD level (0-7)
+        """
+        if not self.max_lod_dropdown:
+            print(f"⚠️ [TOOLBAR] Max LOD dropdown not initialized")
+            return
+        
+        # Clamp max_lod to valid range (0-7)
+        max_lod = max(0, min(7, int(max_lod)))
+        
+        # Find the index for this LOD level
+        target_item = f"LOD{max_lod}"
+        items = self.max_lod_dropdown._items
+        
+        if target_item in items:
+            index = items.index(target_item)
+            self.max_lod_dropdown._selected_index = index
+            self.selected_max_lod = max_lod
+            print(f"✅ [TOOLBAR] Set max LOD dropdown to {target_item} (index {index})")
+        else:
+            print(f"⚠️ [TOOLBAR] LOD{max_lod} not found in dropdown items: {items}")
+            # Fallback to closest available LOD
+            if max_lod <= 7:
+                # Use the max_lod as index directly (since items are LOD0-LOD7)
+                self.max_lod_dropdown._selected_index = max_lod
+                self.selected_max_lod = max_lod
+                print(f"✅ [TOOLBAR] Set max LOD dropdown to index {max_lod} (fallback)")
+        
+        # Trigger the change handler to update slider
+        if self.max_lod_dropdown.on_change:
+            self.max_lod_dropdown.on_change(target_item)
 
     def _update_slider_minmax_markers(self):
         """Update the slider's min/max LOD markers based on dropdown selections."""
         if not self.lod_slider:
             return
+
+        # Ensure object max LOD is set if lod_levels is available
+        if self.lod_levels and self.lod_slider._object_max_lod is None:
+            max_lod = max(self.lod_levels)
+            self.lod_slider.set_object_max_lod(max_lod)
 
         # Get min LOD from dropdown
         min_lod = 0  # Default
@@ -4339,8 +5203,17 @@ class ImportToolbar:
                 if match:
                     max_lod = int(match.group(1))
 
+        # Validate: min_lod should not be greater than max_lod
+        if min_lod > max_lod:
+            print(f"⚠️ [TOOLBAR] WARNING: min_lod ({min_lod}) > max_lod ({max_lod}), swapping values")
+            min_lod, max_lod = max_lod, min_lod
+
         # Update slider markers
+        print(f"🔄 [TOOLBAR] _update_slider_minmax_markers called: min_lod={min_lod}, max_lod={max_lod}")
+        print(f"🔄 [TOOLBAR] Available LODs from import: {self.lod_levels}")
         self.lod_slider.set_min_max_lods(min_lod, max_lod)
+        # Also update Auto LOD state
+        self.lod_slider.set_auto_lod_enabled(self.auto_lod_enabled)
 
     def _on_lod_selection_changed(self, selected_text):
         """Handle min LOD dropdown selection change - update text colors and markers."""
@@ -4361,9 +5234,10 @@ class ImportToolbar:
             # Update all text object colors
             for item in self.lod_text_objects:
                 try:
-                    # Handle both tuple (text_obj, lod_level) and just text_obj
-                    if isinstance(item, tuple):
-                        text_obj, lod_level = item
+                    # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level) or just text_obj
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        text_obj = item[0]
+                        lod_level = item[1]
                     else:
                         # Try to extract LOD from name if not a tuple
                         text_obj = item
@@ -4376,10 +5250,10 @@ class ImportToolbar:
                     text_data.materials.clear()
 
                     # Apply new color based on LOD hierarchy
-                    # Selected = Blue, Below selected (lower numbers) = Black, Above selected (higher numbers) = White
+                    # Selected = White (no blue), Below selected (lower numbers) = Black, Above selected (higher numbers) = White
                     if lod_level == selected_lod:
-                        # Vibrant blue for selected
-                        text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (0.1, 0.4, 1.0, 1.0)))
+                        # White for selected (removed blue)
+                        text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
                     elif lod_level < selected_lod:
                         # Almost black for LODs with lower numbers (worse quality)
                         text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
@@ -4388,12 +5262,19 @@ class ImportToolbar:
                         text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
                 except:
                     pass
+            
+            # Immediately update visibility and text labels when minLOD changes
+            print(f"🔄 [TOOLBAR] minLOD changed to LOD{selected_lod}, updating visibility and text labels immediately")
+            self.update_lod_visibility()
+            self._update_lod_text_labels()
 
     def _on_max_lod_changed(self, selected_text):
         """Handle max LOD dropdown selection change - update markers."""
         print(f"  📊 Max LOD changed to: {selected_text}")
         # Update slider min/max markers
         self._update_slider_minmax_markers()
+        # Update text labels with Quixel LOD info (maxLOD might affect display)
+        self._update_lod_text_labels()
 
     def position_lods_for_preview(self):
         """Position LODs in Y direction with 1m gap and create text labels showing LOD level and polycount."""
@@ -4436,7 +5317,13 @@ class ImportToolbar:
 
             # Processing variation print removed to reduce console clutter
 
-            for lod_level in sorted(lods_by_level.keys()):
+            # Calculate position once for LOD0 (first LOD in sorted order) and reuse for all LODs
+            sorted_lod_levels = sorted(lods_by_level.keys())
+            lod0_position_offsets = None  # Will store (x_offset, y_offset, z_offset) relative to parent
+            lod0_parent = None
+            lod0_text_size = None
+
+            for lod_level in sorted_lod_levels:
                 objects = lods_by_level[lod_level]
 
                 # Calculate bounding box for this LOD level
@@ -4499,17 +5386,16 @@ class ImportToolbar:
                 text_data.size = text_size  # Text size based on mesh size
 
                 text_obj = bpy.data.objects.new(name=f"{variation_name}_LOD{lod_level}_Label", object_data=text_data)
-                bpy.context.collection.objects.link(text_obj)
 
                 # Rotate text 90 degrees on X axis (to face upward/toward camera)
                 text_obj.rotation_euler.x = math.radians(90)
 
                 # Set text color based on LOD hierarchy
-                # Selected = Blue, Below selected (lower numbers) = Black, Above selected (higher numbers) = White
+                # Selected = White (no blue), Below selected (lower numbers) = Black, Above selected (higher numbers) = White
                 selected_lod = self.selected_lod_level if self.selected_lod_level is not None else 0
                 if lod_level == selected_lod:
-                    # Vibrant blue color for selected LOD
-                    text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (0.1, 0.4, 1.0, 1.0)))
+                    # White color for selected LOD (removed blue)
+                    text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
                 elif lod_level < selected_lod:
                     # Almost black for LODs with lower numbers (worse quality)
                     text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
@@ -4522,22 +5408,57 @@ class ImportToolbar:
                 if objects:
                     first_obj = objects[0]
                     if first_obj.parent:
-                        # Position text relative to parent
-                        text_obj.parent = first_obj.parent
-                        # Center X on the LOD's bounding box center (no offset)
-                        text_obj.location.x = center_x - first_obj.parent.location.x
-                        # Center Y on the bounding box center (in parent's local space)
-                        text_obj.location.y = center_y - first_obj.parent.location.y
-                        # Position above the highest point
-                        text_obj.location.z = max_z - first_obj.parent.location.z + text_size * 1.5
+                        # For LOD0 (first LOD), calculate and store position offsets
+                        if lod0_position_offsets is None:
+                            # Calculate position relative to parent for LOD0
+                            lod0_parent = first_obj.parent
+                            lod0_text_size = text_size
+                            x_offset = center_x - first_obj.parent.location.x
+                            y_offset = center_y - first_obj.parent.location.y
+                            z_offset = max_z - first_obj.parent.location.z + text_size * 1.5
+                            lod0_position_offsets = (x_offset, y_offset, z_offset)
+                        
+                        # Use stored position offsets for all LODs (calculated once for LOD0)
+                        text_obj.parent = lod0_parent
+                        text_obj.location.x = lod0_position_offsets[0]
+                        text_obj.location.y = lod0_position_offsets[1]
+                        text_obj.location.z = lod0_position_offsets[2]
+                        
+                        # Link to the same collections as the mesh objects (which are in attach root collections)
+                        if first_obj.users_collection:
+                            for collection in first_obj.users_collection:
+                                collection.objects.link(text_obj)
+                        else:
+                            # Fallback to context collection if mesh has no collections
+                            bpy.context.collection.objects.link(text_obj)
                     else:
                         # No parent, use world space
-                        text_obj.location.x = center_x
-                        text_obj.location.y = center_y
-                        text_obj.location.z = max_z + text_size * 1.5 if max_z is not None else text_size * 1.5
+                        # For LOD0, calculate and store position
+                        if lod0_position_offsets is None:
+                            lod0_text_size = text_size
+                            x_offset = center_x
+                            y_offset = center_y
+                            z_offset = max_z + text_size * 1.5 if max_z is not None else text_size * 1.5
+                            lod0_position_offsets = (x_offset, y_offset, z_offset)
+                        
+                        # Use stored position for all LODs
+                        text_obj.location.x = lod0_position_offsets[0]
+                        text_obj.location.y = lod0_position_offsets[1]
+                        text_obj.location.z = lod0_position_offsets[2]
+                        
+                        # Link to the same collections as the mesh objects
+                        if first_obj.users_collection:
+                            for collection in first_obj.users_collection:
+                                collection.objects.link(text_obj)
+                        else:
+                            # Fallback to context collection if mesh has no collections
+                            bpy.context.collection.objects.link(text_obj)
+                else:
+                    # No objects found, fallback to context collection
+                    bpy.context.collection.objects.link(text_obj)
 
-                # Store text object for later cleanup (with LOD level info)
-                self.lod_text_objects.append((text_obj, lod_level))
+                # Store text object for later cleanup (with LOD level info and tris count)
+                self.lod_text_objects.append((text_obj, lod_level, total_tris))
 
                 # Label creation print removed to reduce console clutter
 
@@ -4546,6 +5467,8 @@ class ImportToolbar:
         # Initialize visibility: show only LOD0 by default
         # Visibility initialization print removed to reduce console clutter
         self.update_lod_visibility()
+        # Update text labels with Quixel LOD info
+        self._update_lod_text_labels()
 
     def _get_or_create_text_material(self, mat_name, color):
         """Get or create a material for text objects with specified color.
@@ -4580,6 +5503,418 @@ class ImportToolbar:
 
         return mat
 
+    def _update_lod_text_labels(self):
+        """Update text labels to show Quixel LOD info for currently visible LOD."""
+        # Get min LOD for Quixel LOD calculation
+        min_lod = 0
+        if self.min_lod_dropdown:
+            min_lod_text = self.min_lod_dropdown.get_selected_item()
+            if min_lod_text:
+                import re
+                match = re.search(r'LOD(\d+)', min_lod_text)
+                if match:
+                    min_lod = int(match.group(1))
+        
+        # Get max LOD
+        max_lod = 5  # Default
+        if self.max_lod_dropdown:
+            max_lod_text = self.max_lod_dropdown.get_selected_item()
+            if max_lod_text:
+                import re
+                match = re.search(r'LOD(\d+)', max_lod_text)
+                if match:
+                    max_lod = int(match.group(1))
+        
+        # Calculate Quixel LOD for currently previewed LOD
+        # Formula: quixel_lod = min_lod + preview_position
+        quixel_lod = min_lod + self.current_preview_lod
+        
+        # Check if this LOD needs auto-generation
+        # Only mark as auto-generated if within minLOD to maxLOD range
+        needs_auto_generation = False
+        if self.auto_lod_enabled and min_lod is not None and max_lod is not None:
+            # Only check if within the minLOD to maxLOD range
+            if min_lod <= quixel_lod <= max_lod:
+                # Check if this Quixel LOD is not in available LODs (needs auto-generation)
+                if self.lod_levels:
+                    needs_auto_generation = (quixel_lod not in self.lod_levels)
+                else:
+                    needs_auto_generation = True
+        
+        # Update text for currently visible LOD
+        # Map preview LOD to Quixel LOD: quixel_lod = min_lod + current_preview_lod
+        target_quixel_lod = quixel_lod  # This is the Quixel LOD we want to show
+        
+        import bpy
+        print(f"🔍 [TEXT UPDATE] _update_lod_text_labels called:")
+        print(f"   - current_preview_lod (slider position): {self.current_preview_lod}")
+        print(f"   - min_lod: {min_lod}")
+        print(f"   - target_quixel_lod: {target_quixel_lod} (should show this Quixel LOD's text)")
+        print(f"   - needs_auto_generation: {needs_auto_generation}")
+        print(f"   - Total text objects in list: {len(self.lod_text_objects)}")
+        
+        # Debug: List all text objects and their current visibility
+        print(f"   [DEBUG] Current text object states:")
+        for idx, item in enumerate(self.lod_text_objects):
+            try:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    text_obj = item[0]
+                    text_quixel_lod = item[1]
+                    is_hidden = text_obj.hide_get() if hasattr(text_obj, 'hide_get') else text_obj.hide_viewport
+                    print(f"      [{idx}] {text_obj.name} - Quixel LOD: {text_quixel_lod}, Hidden: {is_hidden}")
+                    secondary_text_name = f"{text_obj.name}_Secondary"
+                    if secondary_text_name in bpy.data.objects:
+                        sec_obj = bpy.data.objects[secondary_text_name]
+                        sec_hidden = sec_obj.hide_get() if hasattr(sec_obj, 'hide_get') else sec_obj.hide_viewport
+                        print(f"          Secondary: {secondary_text_name} - Hidden: {sec_hidden}")
+            except (AttributeError, ReferenceError) as e:
+                print(f"      [{idx}] ERROR accessing object: {e}")
+                continue
+        
+        # First, hide ALL QUIXEL LOD text objects to ensure clean state
+        print(f"   [QUIXEL LOD TEXT] Hiding all QUIXEL LOD text objects...")
+        quixel_lod_text_count = 0
+        for obj in bpy.data.objects:
+            if obj.name.startswith("QUIXEL LOD "):
+                    try:
+                        # Check if object is in view layer before trying to hide it
+                        if obj.name in bpy.context.view_layer.objects:
+                            obj.hide_set(True)
+                            obj.hide_viewport = True
+                            quixel_lod_text_count += 1
+                            print(f"      [QUIXEL LOD TEXT] Hid: {obj.name}")
+                        else:
+                            # Object not in view layer - ensure it's in a collection
+                            if obj.name not in bpy.context.collection.objects:
+                                bpy.context.collection.objects.link(obj)
+                            obj.hide_set(True)
+                            obj.hide_viewport = True
+                            quixel_lod_text_count += 1
+                            print(f"      [QUIXEL LOD TEXT] Added to collection and hid: {obj.name}")
+                    except RuntimeError as e:
+                        print(f"      [QUIXEL LOD TEXT] Error hiding {obj.name}: {e}")
+        print(f"   [QUIXEL LOD TEXT] Total QUIXEL LOD text objects hidden: {quixel_lod_text_count}")
+        
+        # Hide text objects for LODs below minLOD (they should not be visible at all)
+        # Also show text objects that are now within range (if minLOD decreased)
+        for item in self.lod_text_objects:
+            try:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    text_obj = item[0]
+                    text_quixel_lod = item[1]
+                    # Hide text objects for Quixel LODs below minLOD
+                    if text_quixel_lod < min_lod:
+                        text_obj.hide_set(True)
+                        print(f"   - Hiding text object for Quixel LOD {text_quixel_lod} (below minLOD {min_lod})")
+                    # Note: We don't explicitly show objects here - visibility is handled by update_lod_visibility()
+                    # which will show the correct text object based on target_quixel_lod
+            except (AttributeError, ReferenceError):
+                continue
+        
+        # Now update the visible text objects (only those >= minLOD)
+        # First, hide all text objects that don't match the target LOD (same logic as update_lod_visibility)
+        import bpy
+        if self.lod_text_objects:
+            for item in self.lod_text_objects:
+                try:
+                    # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level)
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        text_obj = item[0]
+                        text_quixel_lod = item[1]  # This is the Quixel LOD stored with the text object
+                    else:
+                        continue
+                    
+                    # Always hide text objects below minLOD (regardless of target_quixel_lod)
+                    if text_quixel_lod < min_lod:
+                        text_obj.hide_set(True)
+                        text_obj.hide_viewport = True
+                        # Also hide secondary text object if it exists
+                        secondary_text_name = f"{text_obj.name}_Secondary"
+                        if secondary_text_name in bpy.data.objects:
+                            secondary_obj = bpy.data.objects[secondary_text_name]
+                            secondary_obj.hide_set(True)
+                            secondary_obj.hide_viewport = True
+                        continue
+                    
+                    # Match by Quixel LOD, not preview LOD position
+                    should_hide = (text_quixel_lod != target_quixel_lod)
+                    text_obj.hide_set(should_hide)
+                    text_obj.hide_viewport = should_hide
+                    print(f"   [DEBUG] Text {text_obj.name} (Quixel LOD {text_quixel_lod}) - should_hide: {should_hide}, hide_set: {text_obj.hide_get() if hasattr(text_obj, 'hide_get') else 'N/A'}, hide_viewport: {text_obj.hide_viewport}")
+                    
+                    # Also hide/show secondary text object (QUIXEL LOD X or AUTO GENERATE)
+                    secondary_text_name = f"{text_obj.name}_Secondary"
+                    if secondary_text_name in bpy.data.objects:
+                        secondary_obj = bpy.data.objects[secondary_text_name]
+                        secondary_obj.hide_set(should_hide)
+                        secondary_obj.hide_viewport = should_hide
+                        print(f"   [DEBUG] Secondary {secondary_text_name} - should_hide: {should_hide}, hide_set: {secondary_obj.hide_get() if hasattr(secondary_obj, 'hide_get') else 'N/A'}, hide_viewport: {secondary_obj.hide_viewport}")
+                except (AttributeError, ReferenceError):
+                    continue
+        
+        # Check if text object exists for target LOD
+        text_obj = None
+        text_quixel_lod = None
+        total_tris = 0
+        lod_exists = False
+        
+        for item in self.lod_text_objects:
+            try:
+                # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level)
+                if isinstance(item, tuple) and len(item) >= 2:
+                    temp_text_obj = item[0]
+                    temp_quixel_lod = item[1]  # This is the Quixel LOD stored with the text object
+                    temp_total_tris = item[2] if len(item) >= 3 else 0
+                else:
+                    continue
+                
+                # Match by Quixel LOD, not preview LOD position
+                if temp_quixel_lod == target_quixel_lod:
+                    text_obj = temp_text_obj
+                    text_quixel_lod = temp_quixel_lod
+                    total_tris = temp_total_tris
+                    lod_exists = True
+                    print(f"   - Matched text object: {text_obj.name} (Quixel LOD {text_quixel_lod}, polycount: {total_tris:,})")
+                    break
+            except (AttributeError, ReferenceError):
+                continue
+        
+        # If LOD doesn't exist, create a text object for it
+        if not lod_exists:
+            print(f"   [MISSING LOD] Creating text object for missing Quixel LOD {target_quixel_lod}")
+            # Find a reference text object to get position and size (use LOD0 or first available)
+            reference_text_obj = None
+            reference_text_data = None
+            for item in self.lod_text_objects:
+                try:
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        ref_obj = item[0]
+                        ref_quixel_lod = item[1]
+                        # Prefer LOD0, otherwise use first available
+                        if ref_quixel_lod == 0 or (reference_text_obj is None and ref_quixel_lod >= min_lod):
+                            reference_text_obj = ref_obj
+                            if reference_text_obj and reference_text_obj.data:
+                                reference_text_data = reference_text_obj.data
+                                if ref_quixel_lod == 0:
+                                    break
+                except (AttributeError, ReferenceError):
+                    continue
+            
+            if reference_text_obj and reference_text_data:
+                # Create text object for missing LOD
+                import math
+                preview_lod_display = self.current_preview_lod
+                text_data = bpy.data.curves.new(name=f"Missing_LOD{target_quixel_lod}_Label", type='FONT')
+                text_data.body = f"LOD{preview_lod_display}\n??? tris"
+                text_data.align_x = 'CENTER'
+                text_data.align_y = 'BOTTOM'
+                text_data.size = reference_text_data.size
+                
+                # Use the same naming convention as regular text objects
+                # Extract variation name from reference text object name
+                reference_name = reference_text_obj.name
+                # Regular text objects are named like: {variation_name}_LOD{lod_level}_Label
+                # We'll use the same pattern but for the missing LOD
+                if "_LOD" in reference_name and "_Label" in reference_name:
+                    # Extract variation name (everything before "_LOD")
+                    variation_name = reference_name.split("_LOD")[0]
+                    text_obj_name = f"{variation_name}_LOD{target_quixel_lod}_Label"
+                else:
+                    # Fallback to old naming if we can't parse
+                    text_obj_name = f"Missing_LOD{target_quixel_lod}_Label"
+                
+                text_obj = bpy.data.objects.new(name=text_obj_name, object_data=text_data)
+                
+                # Link to the same collections as the reference text object
+                if reference_text_obj.users_collection:
+                    for collection in reference_text_obj.users_collection:
+                        collection.objects.link(text_obj)
+                else:
+                    # Fallback to context collection if reference has no collections
+                    bpy.context.collection.objects.link(text_obj)
+                
+                # Position at same location as reference text object
+                text_obj.parent = reference_text_obj.parent
+                text_obj.location.x = reference_text_obj.location.x
+                text_obj.location.y = reference_text_obj.location.y
+                text_obj.location.z = reference_text_obj.location.z
+                text_obj.rotation_euler.x = math.radians(90)
+                
+                # Set text color
+                text_data.materials.clear()
+                selected_lod = self.selected_lod_level if self.selected_lod_level is not None else 0
+                if preview_lod_display == selected_lod:
+                    text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
+                elif preview_lod_display < selected_lod:
+                    text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
+                else:
+                    text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
+                
+                # Make it visible
+                text_obj.hide_set(False)
+                text_obj.hide_viewport = False
+                
+                # Store in lod_text_objects for future reference
+                self.lod_text_objects.append((text_obj, target_quixel_lod, 0))
+                print(f"   [MISSING LOD] Created text object for missing LOD {target_quixel_lod}")
+            else:
+                print(f"   [MISSING LOD] Could not create text object - no reference found")
+                return
+        
+        # Now update the text object (either existing or newly created)
+        if not text_obj or not text_obj.data:
+            print(f"   [ERROR] Text object is None or has no data for Quixel LOD {target_quixel_lod}")
+            return
+            
+        text_data = text_obj.data
+        import bpy
+        import math
+        
+        # Update main text body (remove last line - will be in separate smaller text)
+        # Display preview LOD position, not Quixel LOD
+        preview_lod_display = self.current_preview_lod
+        if lod_exists:
+            text_data.body = f"LOD{preview_lod_display}\n{total_tris:,} tris"
+            print(f"   - Updated text body to: LOD{preview_lod_display} with {total_tris:,} tris")
+        else:
+            text_data.body = f"LOD{preview_lod_display}\n??? tris"
+            print(f"   - Updated text body to: LOD{preview_lod_display} with ??? tris (missing LOD)")
+        
+        # Remove blue coloring - use normal white/gray based on hierarchy
+        # Use preview LOD for color hierarchy, not Quixel LOD
+        text_data.materials.clear()
+        selected_lod = self.selected_lod_level if self.selected_lod_level is not None else 0
+        if preview_lod_display == selected_lod:
+            # Use white instead of blue for selected
+            text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
+        elif preview_lod_display < selected_lod:
+            text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
+        else:
+            text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
+        
+        # Make the last line (Quixel LOD or AUTO GENERATED) 50% smaller
+        # We'll create a second text object for the smaller text
+        # First, hide ALL secondary text objects from OTHER LODs
+        print(f"   [QUIXEL LOD TEXT] Hiding all QUIXEL LOD text objects from other LODs...")
+        for other_item in self.lod_text_objects:
+            try:
+                if isinstance(other_item, tuple) and len(other_item) >= 2:
+                    other_text_obj = other_item[0]
+                    other_quixel_lod = other_item[1]
+                    if other_quixel_lod != target_quixel_lod:  # Only hide secondary objects from OTHER LODs
+                        other_secondary_name = f"QUIXEL LOD {other_quixel_lod}"
+                        if other_secondary_name in bpy.data.objects:
+                            other_sec_obj = bpy.data.objects[other_secondary_name]
+                            try:
+                                if other_sec_obj.name in bpy.context.view_layer.objects:
+                                    other_sec_obj.hide_set(True)
+                                    other_sec_obj.hide_viewport = True
+                                    print(f"   [QUIXEL LOD TEXT] Hid QUIXEL LOD text: {other_secondary_name} (was LOD {other_quixel_lod})")
+                                else:
+                                    # Ensure object is in a collection
+                                    if other_sec_obj.name not in bpy.context.collection.objects:
+                                        bpy.context.collection.objects.link(other_sec_obj)
+                                    other_sec_obj.hide_set(True)
+                                    other_sec_obj.hide_viewport = True
+                            except RuntimeError:
+                                pass
+            except (AttributeError, ReferenceError):
+                continue
+        
+        # Also search for any QUIXEL LOD text objects in the scene
+        all_quixel_lod_texts = []
+        for obj in bpy.data.objects:
+            if obj.name.startswith("QUIXEL LOD "):
+                all_quixel_lod_texts.append(obj.name)
+        if all_quixel_lod_texts:
+            print(f"   [QUIXEL LOD TEXT] Found {len(all_quixel_lod_texts)} QUIXEL LOD text objects in scene: {all_quixel_lod_texts}")
+            for quixel_name in all_quixel_lod_texts:
+                # Extract LOD number from name
+                try:
+                    lod_num = int(quixel_name.replace("QUIXEL LOD ", ""))
+                    if lod_num != target_quixel_lod:
+                        quixel_obj = bpy.data.objects[quixel_name]
+                        try:
+                            if quixel_obj.name in bpy.context.view_layer.objects:
+                                quixel_obj.hide_set(True)
+                                quixel_obj.hide_viewport = True
+                                print(f"   [QUIXEL LOD TEXT] Hid QUIXEL LOD text: {quixel_name}")
+                            else:
+                                # Ensure object is in a collection
+                                if quixel_obj.name not in bpy.context.collection.objects:
+                                    bpy.context.collection.objects.link(quixel_obj)
+                                quixel_obj.hide_set(True)
+                                quixel_obj.hide_viewport = True
+                        except RuntimeError:
+                            pass
+                except ValueError:
+                    pass
+        
+        # Remove any existing QUIXEL LOD text object for THIS LOD (we'll recreate it)
+        quixel_lod_text_name = f"QUIXEL LOD {target_quixel_lod}"
+        if quixel_lod_text_name in bpy.data.objects:
+            print(f"   [QUIXEL LOD TEXT] Removing existing QUIXEL LOD text: {quixel_lod_text_name}")
+            bpy.data.objects.remove(bpy.data.objects[quixel_lod_text_name], do_unlink=True)
+        
+        # Create QUIXEL LOD text object
+        quixel_text_data = bpy.data.curves.new(name=f"{quixel_lod_text_name}_Data", type='FONT')
+        if not lod_exists:
+            # Missing LOD - show "GENERATE LOD" in orange
+            quixel_text_data.body = "GENERATE LOD"
+            quixel_color = (1.0, 0.5, 0.0, 1.0)  # Orange
+        elif needs_auto_generation:
+            quixel_text_data.body = "AUTO GENERATE"
+            quixel_color = (1.0, 0.5, 0.0, 1.0)  # Orange
+        else:
+            quixel_text_data.body = f"QUIXEL LOD {quixel_lod}"  # Add space before number
+            quixel_color = (1.0, 1.0, 1.0, 1.0)  # White
+        
+        quixel_text_data.align_x = 'CENTER'
+        quixel_text_data.align_y = 'BOTTOM'
+        quixel_text_data.size = text_data.size * 0.5  # 50% smaller
+        
+        quixel_text_obj = bpy.data.objects.new(name=quixel_lod_text_name, object_data=quixel_text_data)
+        
+        # Set parent FIRST (to attach root) before linking to collections
+        quixel_text_obj.parent = text_obj.parent
+        
+        # Link to the same collections as the main text object (which are in attach root collections)
+        if text_obj.users_collection:
+            for collection in text_obj.users_collection:
+                collection.objects.link(quixel_text_obj)
+        else:
+            # Fallback: link to collections of the mesh objects if available
+            # Find a mesh object from the same LOD to get its collections
+            import bpy
+            mesh_obj = None
+            for obj in bpy.data.objects:
+                if obj.type == 'MESH' and hasattr(obj, 'parent') and obj.parent == text_obj.parent:
+                    mesh_obj = obj
+                    break
+            
+            if mesh_obj and mesh_obj.users_collection:
+                for collection in mesh_obj.users_collection:
+                    collection.objects.link(quixel_text_obj)
+            else:
+                # Final fallback to context collection
+                bpy.context.collection.objects.link(quixel_text_obj)
+        
+        print(f"   [QUIXEL LOD TEXT] Created QUIXEL LOD text object: {quixel_lod_text_name}, parent: {quixel_text_obj.parent.name if quixel_text_obj.parent else 'None'}")
+        
+        # Position QUIXEL LOD text below the main text
+        quixel_text_obj.location.x = text_obj.location.x
+        quixel_text_obj.location.y = text_obj.location.y
+        quixel_text_obj.location.z = text_obj.location.z - text_data.size * 1.2  # Position below main text
+        quixel_text_obj.rotation_euler.x = math.radians(90)  # Same rotation as main text
+        
+        # Set visibility to match main text object (should be visible since we only create for matching LOD)
+        quixel_text_obj.hide_set(False)
+        quixel_text_obj.hide_viewport = False
+        print(f"   [QUIXEL LOD TEXT] QUIXEL LOD text {quixel_lod_text_name} - hide_set: {quixel_text_obj.hide_get()}, hide_viewport: {quixel_text_obj.hide_viewport}, main text hide: {text_obj.hide_get()}")
+        
+        # Set color for QUIXEL LOD text
+        quixel_text_data.materials.append(self._get_or_create_text_material("LOD_Secondary", quixel_color))
+
     def _delete_text_labels(self):
         """Delete all LOD text labels."""
         import bpy
@@ -4590,9 +5925,21 @@ class ImportToolbar:
                 # Handle both tuple (text_obj, lod_level) and just text_obj
                 text_obj = item[0] if isinstance(item, tuple) else item
 
+                # Get name before deletion
+                text_obj_name = text_obj.name if hasattr(text_obj, 'name') else None
+                
                 # Quick validity check without expensive name lookup
                 bpy.data.objects.remove(text_obj, do_unlink=True)
                 deleted_count += 1
+                
+                # Also delete secondary text object if it exists
+                if text_obj_name:
+                    secondary_text_name = f"{text_obj_name}_Secondary"
+                    if secondary_text_name in bpy.data.objects:
+                        try:
+                            bpy.data.objects.remove(bpy.data.objects[secondary_text_name], do_unlink=True)
+                        except:
+                            pass
             except (ReferenceError, AttributeError):
                 # Text object already deleted or invalid, skip it
                 pass
@@ -4678,6 +6025,10 @@ class ImportToolbar:
             batch.draw(shader)
 
             gpu.state.blend_set('NONE')
+
+        # Draw floor toggle button
+        if self.floor_toggle:
+            self.floor_toggle.draw()
 
         # Draw wireframe toggle button
         if self.wireframe_toggle:
@@ -4783,6 +6134,8 @@ class ImportToolbar:
         # Check top toolbar widgets
         if self.lod_slider and self.lod_slider.mouse_down(x, y):
             return True
+        if self.floor_toggle and self.floor_toggle.mouse_down(x, y):
+            return True
         if self.wireframe_toggle and self.wireframe_toggle.mouse_down(x, y):
             return True
         if self.hdri_toggle and self.hdri_toggle.mouse_down(x, y):
@@ -4791,10 +6144,29 @@ class ImportToolbar:
             return True
 
         # Check dropdowns (they might be expanded)
-        if self.min_lod_dropdown and self.min_lod_dropdown.mouse_down(x, y):
-            return True
-        if self.max_lod_dropdown and self.max_lod_dropdown.mouse_down(x, y):
-            return True
+        # Close other dropdowns before opening a new one
+        if self.min_lod_dropdown and self.min_lod_dropdown.is_in_rect(x, y):
+            # Close all other dropdowns before opening this one
+            self._close_all_dropdowns(exclude_dropdown=self.min_lod_dropdown)
+            if self.min_lod_dropdown.mouse_down(x, y):
+                return True
+        elif self.max_lod_dropdown and self.max_lod_dropdown.is_in_rect(x, y):
+            # Close all other dropdowns before opening this one
+            self._close_all_dropdowns(exclude_dropdown=self.max_lod_dropdown)
+            if self.max_lod_dropdown.mouse_down(x, y):
+                return True
+        else:
+            # Clicked outside both dropdown buttons
+            # Let dropdowns handle their own mouse_down (they'll close themselves if open and clicked outside)
+            # But also close other dropdowns when one is handling a click
+            if self.min_lod_dropdown and self.min_lod_dropdown.mouse_down(x, y):
+                # If min dropdown handled the click, close max dropdown
+                self._close_all_dropdowns(exclude_dropdown=self.min_lod_dropdown)
+                return True
+            if self.max_lod_dropdown and self.max_lod_dropdown.mouse_down(x, y):
+                # If max dropdown handled the click, close min dropdown
+                self._close_all_dropdowns(exclude_dropdown=self.max_lod_dropdown)
+                return True
         # Check Auto LOD checkbox
         if self.auto_lod_checkbox and self.auto_lod_checkbox.mouse_down(x, y):
             return True
@@ -4817,6 +6189,8 @@ class ImportToolbar:
 
         # Check top toolbar widgets
         if self.lod_slider and self.lod_slider.mouse_up(x, y):
+            return True
+        if self.floor_toggle and self.floor_toggle.mouse_up(x, y):
             return True
         if self.wireframe_toggle and self.wireframe_toggle.mouse_up(x, y):
             return True
@@ -4853,6 +6227,8 @@ class ImportToolbar:
             if hasattr(self.lod_slider, '_is_dragging'):
                 is_dragging = self.lod_slider._is_dragging
 
+        if self.floor_toggle:
+            self.floor_toggle.mouse_move(x, y)
         if self.wireframe_toggle:
             self.wireframe_toggle.mouse_move(x, y)
 

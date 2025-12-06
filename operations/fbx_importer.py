@@ -12,17 +12,121 @@ from pathlib import Path
 from ..utils.naming import get_base_name
 
 
-def find_fbx_files(asset_dir):
-    """Find all FBX files in the asset directory.
+def detect_3d_plant_structure(asset_dir):
+    """Detect if this is a 3D plant structure with variation folders.
+    
+    3D plants have structure like:
+    - Var 1/LOD0.fbx, Var 1/LOD1.fbx
+    - Var 2/LOD0.fbx, Var 2/LOD1.fbx
     
     Args:
         asset_dir: Path to the asset directory
         
     Returns:
-        list: List of Path objects to FBX files
+        tuple: (is_3d_plant: bool, variation_folders: dict)
+               variation_folders maps variation_index -> folder_path
     """
     asset_dir = Path(asset_dir)
-    return list(asset_dir.glob("**/*.fbx"))
+    
+    # Look for folders matching "Var 1", "Var 2", "Variation 1", etc.
+    var_pattern = re.compile(r'^var(?:iation)?\s*(\d+)$', re.IGNORECASE)
+    
+    variation_folders = {}
+    
+    for item in asset_dir.iterdir():
+        if not item.is_dir():
+            continue
+        
+        match = var_pattern.match(item.name)
+        if match:
+            var_index = int(match.group(1)) - 1  # Convert to 0-based index (Var 1 -> 0, Var 2 -> 1)
+            variation_folders[var_index] = item
+            print(f"🌱 [3D PLANT] Found variation folder: {item.name} -> index {var_index}")
+    
+    is_3d_plant = len(variation_folders) > 0
+    
+    if is_3d_plant:
+        print(f"🌱 [3D PLANT] Detected 3D plant structure with {len(variation_folders)} variation(s)")
+    
+    return is_3d_plant, variation_folders
+
+
+def detect_lod_levels_from_fbx(fbx_files):
+    """Detect LOD levels from FBX filenames.
+    
+    Args:
+        fbx_files: List of FBX file paths
+        
+    Returns:
+        tuple: (lod_levels: list, max_lod: int)
+               lod_levels: Sorted list of LOD level numbers (e.g., [0, 1, 2, 3])
+               max_lod: Maximum LOD level found (or 0 if none found)
+    """
+    lod_pattern = re.compile(r'_?LOD(\d+)', re.IGNORECASE)
+    lod_levels = set()
+    
+    for fbx_file in fbx_files:
+        fbx_path = Path(fbx_file)
+        lod_match = lod_pattern.search(fbx_path.stem)
+        if lod_match:
+            lod_level = int(lod_match.group(1))
+            lod_levels.add(lod_level)
+    
+    sorted_lods = sorted(lod_levels) if lod_levels else [0]
+    max_lod = max(sorted_lods) if sorted_lods else 0
+    
+    print(f"🔍 [LOD DETECTION] Detected LOD levels: {sorted_lods} (max: {max_lod})")
+    
+    return sorted_lods, max_lod
+
+
+def find_fbx_files(asset_dir, detect_plants=True):
+    """Find all FBX files in the asset directory.
+    
+    For 3D plants, also tracks which variation folder each FBX belongs to.
+    
+    Args:
+        asset_dir: Path to the asset directory
+        detect_plants: Whether to detect and handle 3D plant structure
+        
+    Returns:
+        tuple: (fbx_files: list, is_3d_plant: bool, fbx_variation_map: dict)
+               fbx_variation_map maps fbx_file -> variation_index (for 3D plants)
+    """
+    asset_dir = Path(asset_dir)
+    
+    # Detect 3D plant structure
+    is_3d_plant = False
+    variation_folders = {}
+    fbx_variation_map = {}
+    
+    if detect_plants:
+        is_3d_plant, variation_folders = detect_3d_plant_structure(asset_dir)
+    
+    # Find all FBX files
+    all_fbx_files = list(asset_dir.glob("**/*.fbx"))
+    
+    if is_3d_plant:
+        print(f"🌱 [3D PLANT] Found {len(all_fbx_files)} FBX file(s) total")
+        
+        # Map each FBX file to its variation folder
+        for fbx_file in all_fbx_files:
+            # Find which variation folder this FBX belongs to
+            for var_index, var_folder in variation_folders.items():
+                try:
+                    # Check if FBX is inside this variation folder
+                    if var_folder in fbx_file.parents or fbx_file.parent == var_folder:
+                        fbx_variation_map[fbx_file] = var_index
+                        print(f"🌱 [3D PLANT]   {fbx_file.name} -> Variation {var_index} (from {var_folder.name})")
+                        break
+                except:
+                    pass
+            
+            # If not found in any variation folder, it might be in root (shared)
+            if fbx_file not in fbx_variation_map:
+                print(f"🌱 [3D PLANT]   {fbx_file.name} -> No variation folder (root/shared)")
+    
+    return all_fbx_files, is_3d_plant, fbx_variation_map
 
 
 def import_fbx_file(filepath, context):
@@ -92,15 +196,23 @@ def group_imported_objects(import_results):
     """Group imported objects by base name.
     
     Args:
-        import_results: List of tuples (fbx_file, imported_objects, base_name)
+        import_results: List of tuples (fbx_file, imported_objects, base_name, variation_index)
+                        variation_index is None for non-3D-plant assets
         
     Returns:
         dict: Maps base_name -> list of import groups
-              Each import group is {'fbx_file': Path, 'objects': list}
+              Each import group is {'fbx_file': Path, 'objects': list, 'variation_index': int or None}
     """
     all_imported_objects = {}
     
-    for fbx_file, imported_objects, base_name in import_results:
+    for result in import_results:
+        # Handle both old format (3 elements) and new format (4 elements)
+        if len(result) == 3:
+            fbx_file, imported_objects, base_name = result
+            variation_index = None
+        else:
+            fbx_file, imported_objects, base_name, variation_index = result
+        
         if not base_name:
             continue
         
@@ -109,7 +221,8 @@ def group_imported_objects(import_results):
         
         all_imported_objects[base_name].append({
             'fbx_file': fbx_file,
-            'objects': imported_objects
+            'objects': imported_objects,
+            'variation_index': variation_index
         })
     
     return all_imported_objects

@@ -14,9 +14,10 @@ def draw_bridge_button(self, context):
     layout = self.layout
     layout.separator()
 
-    # Get custom icon
+    # Get custom icons
     from ..utils import icon_loader
-    bridge_icon = icon_loader.get_icon_id("bridge_24")
+    bridge_active_icon = icon_loader.get_icon_id("bridge_active_24")
+    bridge_inactive_icon = icon_loader.get_icon_id("bridge_inactive_24")
 
     # Get coordinator to show active status
     try:
@@ -24,21 +25,21 @@ def draw_bridge_button(self, context):
         coordinator = get_coordinator()
 
         if coordinator and coordinator.is_active():
-            # Active - use different color/icon
-            if bridge_icon:
-                layout.operator("quixel.launch_bridge", text="Bridge (Active)", icon_value=bridge_icon)
+            # Active - use active icon
+            if bridge_active_icon:
+                layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_active_icon)
             else:
-                layout.operator("quixel.launch_bridge", text="Bridge (Active)", icon='CHECKMARK')
+                layout.operator("quixel.launch_bridge", text="Bridge", icon='CHECKMARK')
         else:
-            # Not active
-            if bridge_icon:
-                layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_icon)
+            # Not active - use inactive icon
+            if bridge_inactive_icon:
+                layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_inactive_icon)
             else:
                 layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
     except:
-        # Fallback if coordinator not available
-        if bridge_icon:
-            layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_icon)
+        # Fallback if coordinator not available - use inactive icon
+        if bridge_inactive_icon:
+            layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_inactive_icon)
         else:
             layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
 
