@@ -2784,6 +2784,9 @@ class ImportToolbar:
         self.show_all_checkbox = None
         self.wireframe_toggle = None
 
+        # Bridge button (to launch Quixel Bridge and claim active)
+        self.bridge_button = None
+
         # HDRI widgets
         self.hdri_toggle = None           # Main HDRI toggle button
         self.hdri_dropdown_button = None  # Dropdown arrow button
@@ -3232,6 +3235,7 @@ class ImportToolbar:
                 area.tag_redraw()
 
         print("  🔲  Wireframe disabled")
+
 
     def _handle_hdri_toggle(self, toggled):
         """Handle HDRI toggle button - enables/disables viewport shading."""
@@ -4851,6 +4855,9 @@ class ImportToolbar:
 
         if self.wireframe_toggle:
             self.wireframe_toggle.mouse_move(x, y)
+
+        if self.bridge_button:
+            self.bridge_button.mouse_move(x, y)
 
         if self.hdri_toggle:
             self.hdri_toggle.mouse_move(x, y)

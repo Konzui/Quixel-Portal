@@ -48,12 +48,21 @@ from .ui.operators import (
     QUIXEL_OT_import_fbx,
 )
 from .ui.import_modal import QUIXEL_OT_import_confirm
+from .ui.bridge_launcher import QUIXEL_OT_launch_bridge
+from .ui.bridge_panel import QUIXEL_PT_bridge_panel
+from .ui import bridge_menu
 
 # Import socket communication functions
 from .communication.quixel_bridge_socket import (
     start_socket_listener,
     stop_socket_listener,
     check_pending_imports,
+)
+
+# Import coordinator functions
+from .communication.bridge_coordinator import (
+    initialize_coordinator,
+    shutdown_coordinator,
 )
 
 
@@ -71,12 +80,27 @@ def register():
     bpy.utils.register_class(QUIXEL_OT_cleanup_requests)
     bpy.utils.register_class(QUIXEL_OT_import_fbx)
     bpy.utils.register_class(QUIXEL_OT_import_confirm)
+    bpy.utils.register_class(QUIXEL_OT_launch_bridge)
 
-    # Start the Quixel Bridge socket listener
+    # Register the UI panel
+    bpy.utils.register_class(QUIXEL_PT_bridge_panel)
+    print("✅ Quixel Portal: UI panel registered")
+
+    # Register the menu item
+    bridge_menu.register()
+    print("✅ Quixel Portal: Menu item registered")
+
+    # Initialize the multi-instance coordinator (hub or client mode)
+    if initialize_coordinator():
+        print("✅ Quixel Portal: Multi-instance coordinator initialized")
+    else:
+        print("⚠️ Quixel Portal: Failed to initialize coordinator")
+
+    # Start the Quixel Bridge socket listener (only for hub instances)
     if start_socket_listener():
         print("✅ Quixel Portal: Socket listener started on port 24981")
     else:
-        print("⚠️ Quixel Portal: Failed to start socket listener")
+        print("⚠️ Quixel Portal: Socket listener not started (client mode or error)")
 
     # Start the background timer to check for pending imports
     if not bpy.app.timers.is_registered(check_pending_imports):
@@ -93,8 +117,20 @@ def unregister():
         bpy.app.timers.unregister(check_pending_imports)
         print("✅ Quixel Portal: Import request monitor stopped")
 
+    # Shutdown the coordinator
+    shutdown_coordinator()
+
     # Stop the socket listener
     stop_socket_listener()
+
+    # Unregister the menu item
+    bridge_menu.unregister()
+
+    # Unregister the UI panel
+    try:
+        bpy.utils.unregister_class(QUIXEL_PT_bridge_panel)
+    except:
+        pass
 
     # Unregister the operators
     try:
@@ -109,6 +145,11 @@ def unregister():
 
     try:
         bpy.utils.unregister_class(QUIXEL_OT_import_confirm)
+    except:
+        pass
+
+    try:
+        bpy.utils.unregister_class(QUIXEL_OT_launch_bridge)
     except:
         pass
 

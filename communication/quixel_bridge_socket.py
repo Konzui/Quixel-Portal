@@ -132,27 +132,36 @@ def parse_bridge_json(bridge_data):
 
 def _importer_callback(received_data):
     """Callback function called when socket receives data.
-    
+
     This function is called from the socket thread, so we need to
     safely queue the import requests for processing in the main thread.
-    
+
     Args:
         received_data: Raw bytes data received from socket
     """
     try:
         # Parse the JSON data
         import_requests = parse_bridge_json(received_data)
-        
+
         if not import_requests:
             print(f"⚠️ Quixel Bridge: No valid import requests parsed")
             return
-        
-        # Queue import requests for processing in main thread
-        with _bridge_data_lock:
-            _pending_imports.extend(import_requests)
-        
-        print(f"📋 Quixel Bridge: Queued {len(import_requests)} import request(s)")
-        
+
+        # Route through coordinator if available (hub will route to active instance)
+        from .bridge_coordinator import get_coordinator
+
+        coordinator = get_coordinator()
+
+        if coordinator and coordinator.mode == 'hub':
+            # Hub mode: route to active instance
+            print(f"📋 Quixel Bridge: Routing {len(import_requests)} request(s) through hub")
+            coordinator.route_import_data(import_requests)
+        else:
+            # Fallback: queue directly (backwards compatibility)
+            with _bridge_data_lock:
+                _pending_imports.extend(import_requests)
+            print(f"📋 Quixel Bridge: Queued {len(import_requests)} import request(s)")
+
     except Exception as e:
         print(f"❌ Quixel Bridge: Error in importer callback: {e}")
         import traceback
@@ -282,35 +291,51 @@ class QuixelBridgeSocketListener(threading.Thread):
                 pass
 
 
-def start_socket_listener():
+def start_socket_listener(force: bool = False):
     """Start the Quixel Bridge socket listener thread.
-    
+
+    Note: In multi-instance mode, only the hub should run the socket listener.
+    This function will automatically check the coordinator mode unless force=True.
+
+    Args:
+        force: If True, start listener regardless of coordinator mode
+
     Returns:
         bool: True if listener started successfully, False otherwise
     """
     global _socket_listener
-    
+
     # Check if listener is already running
     if _socket_listener and _socket_listener.is_alive():
         print(f"ℹ️ Quixel Bridge: Socket listener already running")
         return True
-    
+
+    # Check if we should start the listener (only hub instances)
+    if not force:
+        from .bridge_coordinator import get_coordinator
+
+        coordinator = get_coordinator()
+
+        if coordinator and coordinator.mode != 'hub':
+            print(f"ℹ️ Quixel Bridge: Socket listener not started (client mode)")
+            return True  # Not an error - clients don't need socket listener
+
     try:
         # Create and start listener thread
         _socket_listener = QuixelBridgeSocketListener()
         _socket_listener.start()
-        
+
         # Give it a moment to start
         import time
         time.sleep(0.1)
-        
+
         if _socket_listener.is_alive():
             print(f"✅ Quixel Bridge: Socket listener started successfully")
             return True
         else:
             print(f"❌ Quixel Bridge: Socket listener failed to start")
             return False
-            
+
     except Exception as e:
         print(f"❌ Quixel Bridge: Failed to start socket listener: {e}")
         import traceback
