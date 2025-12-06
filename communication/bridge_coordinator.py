@@ -46,16 +46,12 @@ class BridgeCoordinator:
         Returns:
             bool: True if successful
         """
-        print(f"🎯 QuixelBridge: Initializing as HUB (PID: {self.instance_pid})")
-
         self.hub = QuixelBridgeHub()
 
         if self.hub.start():
             self.mode = 'hub'
-            print(f"✅ QuixelBridge: Running as HUB")
             return True
         else:
-            print(f"❌ QuixelBridge: Failed to start as hub")
             self.hub = None
             return False
 
@@ -68,16 +64,12 @@ class BridgeCoordinator:
         # Get instance name from current blend file
         instance_name = self._get_instance_name()
 
-        print(f"🎯 QuixelBridge: Initializing as CLIENT (PID: {self.instance_pid}, Name: {instance_name})")
-
         self.client = QuixelBridgeClient(instance_name)
 
         if self.client.start():
             self.mode = 'client'
-            print(f"✅ QuixelBridge: Running as CLIENT")
             return True
         else:
-            print(f"❌ QuixelBridge: Failed to start as client")
             self.client = None
             return False
 
@@ -92,7 +84,6 @@ class BridgeCoordinator:
             self.client = None
 
         self.mode = None
-        print(f"✅ QuixelBridge: Coordinator shutdown")
 
     def claim_active(self) -> bool:
         """Claim active status for this instance and bring window to foreground.
@@ -105,8 +96,8 @@ class BridgeCoordinator:
             hwnd = get_blender_window_handle()
 
             if not hwnd:
-                print("⚠️ QuixelBridge: Could not get window handle")
                 # Continue anyway, just without window activation
+                pass
 
             if self.mode == 'hub':
                 # Hub claims active by setting itself as active
@@ -123,7 +114,6 @@ class BridgeCoordinator:
                 if hwnd:
                     set_foreground_window(hwnd)
 
-                print(f"✅ QuixelBridge: Hub claimed active status (HWND: {hwnd})")
                 return True
 
             elif self.mode == 'client':
@@ -131,11 +121,9 @@ class BridgeCoordinator:
                 return self.client.claim_active()
 
             else:
-                print("❌ QuixelBridge: Cannot claim active - not initialized")
                 return False
 
         except Exception as e:
-            print(f"❌ QuixelBridge: Error claiming active: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -151,7 +139,6 @@ class BridgeCoordinator:
             if self.hub.active_instance and self.hub.active_instance.get('pid') == self.instance_pid:
                 self.hub.active_instance = None
                 self.hub.state.set_active_instance(None)
-                print(f"✅ QuixelBridge: Hub released active status")
                 return True
             return False
 
@@ -160,7 +147,6 @@ class BridgeCoordinator:
             return self.client.release_active()
 
         else:
-            print(f"❌ QuixelBridge: Cannot release active - not initialized")
             return False
 
     def is_active(self) -> bool:
@@ -186,8 +172,6 @@ class BridgeCoordinator:
         """
         if self.mode == 'hub':
             self.hub.route_import_data(import_requests)
-        else:
-            print(f"⚠️ QuixelBridge: Only hub can route import data")
 
     def _get_instance_name(self) -> str:
         """Get a display name for this Blender instance.
@@ -231,7 +215,6 @@ def initialize_coordinator() -> bool:
     global _coordinator
 
     if _coordinator:
-        print("ℹ️ QuixelBridge: Coordinator already initialized")
         return True
 
     _coordinator = BridgeCoordinator()

@@ -51,6 +51,10 @@ from .ui.import_modal import QUIXEL_OT_import_confirm
 from .ui.bridge_launcher import QUIXEL_OT_launch_bridge
 from .ui.bridge_panel import QUIXEL_PT_bridge_panel
 from .ui import bridge_menu
+from .ui import preferences
+
+# Import utilities
+from .utils import icon_loader
 
 # Import socket communication functions
 from .communication.quixel_bridge_socket import (
@@ -74,7 +78,13 @@ def register():
         from .utils.scene_manager import cleanup_orphaned_preview_scenes
         cleanup_orphaned_preview_scenes()
     except Exception as e:
-        print(f"⚠️ Quixel Portal: Could not cleanup orphaned preview scenes: {e}")
+        pass
+
+    # Register icon loader
+    icon_loader.register()
+
+    # Register preferences
+    preferences.register()
 
     # Register the operators
     bpy.utils.register_class(QUIXEL_OT_cleanup_requests)
@@ -84,30 +94,19 @@ def register():
 
     # Register the UI panel
     bpy.utils.register_class(QUIXEL_PT_bridge_panel)
-    print("✅ Quixel Portal: UI panel registered")
 
     # Register the menu item
     bridge_menu.register()
-    print("✅ Quixel Portal: Menu item registered")
 
     # Initialize the multi-instance coordinator (hub or client mode)
-    if initialize_coordinator():
-        print("✅ Quixel Portal: Multi-instance coordinator initialized")
-    else:
-        print("⚠️ Quixel Portal: Failed to initialize coordinator")
+    initialize_coordinator()
 
     # Start the Quixel Bridge socket listener (only for hub instances)
-    if start_socket_listener():
-        print("✅ Quixel Portal: Socket listener started on port 24981")
-    else:
-        print("⚠️ Quixel Portal: Socket listener not started (client mode or error)")
+    start_socket_listener()
 
     # Start the background timer to check for pending imports
     if not bpy.app.timers.is_registered(check_pending_imports):
         bpy.app.timers.register(check_pending_imports)
-        print("✅ Quixel Portal: Import request monitor started")
-
-    print("✅ Quixel Portal: Addon registered")
 
 
 def unregister():
@@ -115,7 +114,6 @@ def unregister():
     # Stop the background timer
     if bpy.app.timers.is_registered(check_pending_imports):
         bpy.app.timers.unregister(check_pending_imports)
-        print("✅ Quixel Portal: Import request monitor stopped")
 
     # Shutdown the coordinator
     shutdown_coordinator()
@@ -153,7 +151,11 @@ def unregister():
     except:
         pass
 
-    print("✅ Quixel Portal: Addon unregistered")
+    # Unregister preferences
+    preferences.unregister()
+
+    # Unregister icon loader
+    icon_loader.unregister()
 
 
 if __name__ == "__main__":

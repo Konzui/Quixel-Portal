@@ -14,6 +14,10 @@ def draw_bridge_button(self, context):
     layout = self.layout
     layout.separator()
 
+    # Get custom icon
+    from ..utils import icon_loader
+    bridge_icon = icon_loader.get_icon_id("bridge_24")
+
     # Get coordinator to show active status
     try:
         from ..communication.bridge_coordinator import get_coordinator
@@ -21,13 +25,22 @@ def draw_bridge_button(self, context):
 
         if coordinator and coordinator.is_active():
             # Active - use different color/icon
-            layout.operator("quixel.launch_bridge", text="Bridge (Active)", icon='CHECKMARK')
+            if bridge_icon:
+                layout.operator("quixel.launch_bridge", text="Bridge (Active)", icon_value=bridge_icon)
+            else:
+                layout.operator("quixel.launch_bridge", text="Bridge (Active)", icon='CHECKMARK')
         else:
             # Not active
-            layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
+            if bridge_icon:
+                layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_icon)
+            else:
+                layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
     except:
         # Fallback if coordinator not available
-        layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
+        if bridge_icon:
+            layout.operator("quixel.launch_bridge", text="Bridge", icon_value=bridge_icon)
+        else:
+            layout.operator("quixel.launch_bridge", text="Bridge", icon='WORLD')
 
 
 def register():
@@ -41,9 +54,8 @@ def register():
     try:
         bpy.types.TOPBAR_HT_upper_bar.append(draw_bridge_button)
         _button_registered = True
-        print("✅ Quixel Portal: Bridge button added to header")
     except Exception as e:
-        print(f"⚠️ Quixel Portal: Failed to add Bridge button: {e}")
+        pass
 
 
 def unregister():
@@ -64,4 +76,3 @@ def unregister():
 
     if removed_count > 0:
         _button_registered = False
-        print(f"✅ Quixel Portal: Removed {removed_count} Bridge button(s) from header")

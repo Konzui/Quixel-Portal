@@ -46,21 +46,17 @@ def parse_bridge_json(bridge_data):
             # If it's a single object, wrap it in a list
             json_array = [json_array]
 
-        print(f"📥 Quixel Bridge: Received {len(json_array)} asset(s)")
-
         # Process each asset in the array
         for asset_data in json_array:
             try:
                 # Extract asset path (required)
                 asset_path = asset_data.get("path")
                 if not asset_path:
-                    print(f"⚠️ Quixel Bridge: Skipping asset - no path found")
                     continue
 
                 # Convert to Path object and verify it exists
                 asset_dir = Path(asset_path)
                 if not asset_dir.exists():
-                    print(f"⚠️ Quixel Bridge: Asset path does not exist: {asset_path}")
                     continue
 
                 # Extract asset name
@@ -109,22 +105,17 @@ def parse_bridge_json(bridge_data):
                 }
                 
                 import_requests.append(import_request)
-                
-                print(f"✅ Quixel Bridge: Parsed asset '{asset_name}' from {asset_path}")
-                
+
             except Exception as e:
-                print(f"⚠️ Quixel Bridge: Error parsing asset data: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
         
         return import_requests
-        
+
     except json.JSONDecodeError as e:
-        print(f"❌ Quixel Bridge: Failed to parse JSON data: {e}")
         return []
     except Exception as e:
-        print(f"❌ Quixel Bridge: Error processing bridge data: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -144,7 +135,6 @@ def _importer_callback(received_data):
         import_requests = parse_bridge_json(received_data)
 
         if not import_requests:
-            print(f"⚠️ Quixel Bridge: No valid import requests parsed")
             return
 
         # Route through coordinator if available (hub will route to active instance)
@@ -154,16 +144,13 @@ def _importer_callback(received_data):
 
         if coordinator and coordinator.mode == 'hub':
             # Hub mode: route to active instance
-            print(f"📋 Quixel Bridge: Routing {len(import_requests)} request(s) through hub")
             coordinator.route_import_data(import_requests)
         else:
             # Fallback: queue directly (backwards compatibility)
             with _bridge_data_lock:
                 _pending_imports.extend(import_requests)
-            print(f"📋 Quixel Bridge: Queued {len(import_requests)} import request(s)")
 
     except Exception as e:
-        print(f"❌ Quixel Bridge: Error in importer callback: {e}")
         import traceback
         traceback.print_exc()
 
@@ -186,8 +173,6 @@ class QuixelBridgeSocketListener(threading.Thread):
     def run(self):
         """Start the socket listener loop."""
         try:
-            print(f"🔌 Quixel Bridge: Starting socket listener on {self.host}:{self.port}")
-            
             # Create socket
             self.socket_ = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             
@@ -198,15 +183,8 @@ class QuixelBridgeSocketListener(threading.Thread):
             try:
                 self.socket_.bind((self.host, self.port))
             except OSError as e:
-                if "Address already in use" in str(e) or "Only one usage" in str(e):
-                    print(f"⚠️ Quixel Bridge: Port {self.port} is already in use. Another instance may be running.")
-                    print(f"   You may need to close other Blender instances or Quixel Bridge connections.")
-                else:
-                    print(f"❌ Quixel Bridge: Failed to bind socket: {e}")
                 self.running = False
                 return
-            
-            print(f"✅ Quixel Bridge: Socket listener bound to {self.host}:{self.port}")
             
             # Main listening loop
             while self.running:
@@ -216,8 +194,7 @@ class QuixelBridgeSocketListener(threading.Thread):
                     
                     # Accept connection
                     client, addr = self.socket_.accept()
-                    print(f"📡 Quixel Bridge: Connection received from {addr[0]}:{addr[1]}")
-                    
+
                     # Receive data
                     buffer_size = 4096 * 2
                     total_data = b""
@@ -227,7 +204,6 @@ class QuixelBridgeSocketListener(threading.Thread):
                     
                     # Check for shutdown signal
                     if data == b'Bye Megascans':
-                        print(f"🛑 Quixel Bridge: Received shutdown signal")
                         self.running = False
                         client.close()
                         break
@@ -238,9 +214,8 @@ class QuixelBridgeSocketListener(threading.Thread):
                         # Keep receiving until connection closes
                         while self.running:
                             data = client.recv(buffer_size)
-                            
+
                             if data == b'Bye Megascans':
-                                print(f"🛑 Quixel Bridge: Received shutdown signal")
                                 self.running = False
                                 break
                             
@@ -249,7 +224,6 @@ class QuixelBridgeSocketListener(threading.Thread):
                             else:
                                 # Connection closed, process received data
                                 if total_data:
-                                    print(f"📦 Quixel Bridge: Received {len(total_data)} bytes of data")
                                     _importer_callback(total_data)
                                 break
                         
@@ -257,17 +231,15 @@ class QuixelBridgeSocketListener(threading.Thread):
                     
                 except socket.error as e:
                     if self.running:
-                        print(f"⚠️ Quixel Bridge: Socket error: {e}")
+                        pass
                     break
                 except Exception as e:
                     if self.running:
-                        print(f"❌ Quixel Bridge: Error in socket loop: {e}")
                         import traceback
                         traceback.print_exc()
                     break
-        
+
         except Exception as e:
-            print(f"❌ Quixel Bridge: Fatal error in socket listener: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -276,11 +248,9 @@ class QuixelBridgeSocketListener(threading.Thread):
                     self.socket_.close()
                 except:
                     pass
-            print(f"🔌 Quixel Bridge: Socket listener stopped")
     
     def stop(self):
         """Stop the socket listener."""
-        print(f"🛑 Quixel Bridge: Stopping socket listener...")
         self.running = False
         
         # Close socket to break out of accept() call
@@ -307,7 +277,6 @@ def start_socket_listener(force: bool = False):
 
     # Check if listener is already running
     if _socket_listener and _socket_listener.is_alive():
-        print(f"ℹ️ Quixel Bridge: Socket listener already running")
         return True
 
     # Check if we should start the listener (only hub instances)
@@ -317,7 +286,6 @@ def start_socket_listener(force: bool = False):
         coordinator = get_coordinator()
 
         if coordinator and coordinator.mode != 'hub':
-            print(f"ℹ️ Quixel Bridge: Socket listener not started (client mode)")
             return True  # Not an error - clients don't need socket listener
 
     try:
@@ -330,14 +298,11 @@ def start_socket_listener(force: bool = False):
         time.sleep(0.1)
 
         if _socket_listener.is_alive():
-            print(f"✅ Quixel Bridge: Socket listener started successfully")
             return True
         else:
-            print(f"❌ Quixel Bridge: Socket listener failed to start")
             return False
 
     except Exception as e:
-        print(f"❌ Quixel Bridge: Failed to start socket listener: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -352,12 +317,7 @@ def stop_socket_listener():
         
         # Wait for thread to finish (with timeout)
         _socket_listener.join(timeout=2.0)
-        
-        if _socket_listener.is_alive():
-            print(f"⚠️ Quixel Bridge: Socket listener thread did not stop gracefully")
-        else:
-            print(f"✅ Quixel Bridge: Socket listener stopped")
-    
+
     _socket_listener = None
 
 
@@ -395,8 +355,6 @@ def check_pending_imports():
         glacier_setup = import_request.get("glacier_setup", True)
         texture_resolution = import_request.get("texture_resolution")
 
-        print(f"📥 Importing: {asset_name} ({texture_resolution or 'default resolution'})")
-        
         # Import the asset using the main import function
         # This is a blocking operation, but we only do one at a time
         from ..main import import_asset
@@ -408,14 +366,8 @@ def check_pending_imports():
             glacier_setup=glacier_setup,
             texture_resolution=texture_resolution
         )
-        
-        if result == {'FINISHED'}:
-            print(f"✅ Quixel Bridge: Successfully imported asset '{asset_name}'")
-        else:
-            print(f"⚠️ Quixel Bridge: Import returned: {result}")
-            
+
     except Exception as e:
-        print(f"❌ Quixel Bridge: Error processing import request: {e}")
         import traceback
         traceback.print_exc()
     finally:

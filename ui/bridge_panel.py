@@ -26,7 +26,14 @@ class QUIXEL_PT_bridge_panel(bpy.types.Panel):
         # Bridge button (large and prominent)
         row = box.row()
         row.scale_y = 2.0  # Make button taller
-        row.operator("quixel.launch_bridge", text="Launch Bridge & Claim Active", icon='PLAY')
+
+        # Use custom icon if available
+        from ..utils import icon_loader
+        bridge_icon = icon_loader.get_icon_id("bridge_24")
+        if bridge_icon:
+            row.operator("quixel.launch_bridge", text="Launch Bridge & Claim Active", icon_value=bridge_icon)
+        else:
+            row.operator("quixel.launch_bridge", text="Launch Bridge & Claim Active", icon='PLAY')
 
         # Status information
         box.separator()
