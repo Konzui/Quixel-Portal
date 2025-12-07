@@ -23,6 +23,12 @@ def create_floor_plane(context):
         tuple: (floor_object, floor_material) or (None, None) if creation failed
     """
     try:
+        # Check if floor already exists - if so, return it instead of creating a duplicate
+        existing_floor = bpy.data.objects.get("__QuixelFloor__")
+        if existing_floor:
+            existing_mat = bpy.data.materials.get("__QuixelFloorMaterial__")
+            return existing_floor, existing_mat
+        
         # Get addon directory
         addon_dir = Path(__file__).parent.parent
         dev_tex_path = addon_dir / "assets" / "img" / "dev_tex.png"

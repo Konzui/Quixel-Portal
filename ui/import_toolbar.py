@@ -3872,11 +3872,11 @@ class ImportToolbar:
 
             # Show floor plane
             if self.floor_obj:
-                # Ensure object is in current view layer
-                view_layer = context.view_layer
-                if self.floor_obj.name not in view_layer.objects:
-                    # Add object to view layer if it's not there
-                    view_layer.objects.link(self.floor_obj)
+                # Ensure object is in current collection (objects are linked to collections, not view layers)
+                # Check if object is in any collection in the current scene
+                if not self.floor_obj.users_collection:
+                    # Object not in any collection, link it to the active collection
+                    context.collection.objects.link(self.floor_obj)
                 self.floor_obj.hide_set(False)
                 self.floor_obj.hide_viewport = False
         else:
@@ -3885,11 +3885,8 @@ class ImportToolbar:
 
             # Hide floor plane
             if self.floor_obj:
-                # Check if object is in current view layer before hiding
-                view_layer = context.view_layer
-                if self.floor_obj.name in view_layer.objects:
-                    self.floor_obj.hide_set(True)
-                # Always set hide_viewport (doesn't require view layer membership)
+                # Hide the floor object
+                self.floor_obj.hide_set(True)
                 self.floor_obj.hide_viewport = True
 
         # Force viewport update
@@ -5151,21 +5148,36 @@ class ImportToolbar:
             selected_lod = int(match.group(1))
             self.selected_lod_level = selected_lod
 
+            # Get current minLOD to determine which text objects should have their colors updated
+            # Only update colors for LODs >= minLOD (LODs below minLOD should keep their original colors)
+            min_lod = 0
+            if self.min_lod_dropdown:
+                min_lod_text = self.min_lod_dropdown.get_selected_item()
+                if min_lod_text:
+                    min_match = re.search(r'LOD(\d+)', min_lod_text)
+                    if min_match:
+                        min_lod = int(min_match.group(1))
+
             # Update slider min/max markers
             self._update_slider_minmax_markers()
 
-            # Update all text object colors
+            # Update text object colors - but only for LODs >= minLOD
+            # LODs below minLOD should keep their original colors (they're hidden anyway)
             for item in self.lod_text_objects:
                 try:
                     # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level) or just text_obj
                     if isinstance(item, tuple) and len(item) >= 2:
                         text_obj = item[0]
-                        lod_level = item[1]
+                        lod_level = item[1]  # This is the Quixel LOD
                     else:
                         # Try to extract LOD from name if not a tuple
                         text_obj = item
                         name_match = re.search(r'LOD(\d+)', text_obj.name)
                         lod_level = int(name_match.group(1)) if name_match else 0
+
+                    # Skip color update for LODs below minLOD - they should keep their original colors
+                    if lod_level < min_lod:
+                        continue
 
                     # Quick validity check without expensive name lookup
                     text_data = text_obj.data
@@ -5173,6 +5185,7 @@ class ImportToolbar:
                     text_data.materials.clear()
 
                     # Apply new color based on LOD hierarchy
+                    # Compare Quixel LODs (both lod_level and selected_lod are Quixel LODs)
                     # Selected = White (no blue), Below selected (lower numbers) = Black, Above selected (higher numbers) = White
                     if lod_level == selected_lod:
                         # White for selected (removed blue)
@@ -5517,6 +5530,10 @@ class ImportToolbar:
         total_tris = 0
         lod_exists = False
         
+        # First, check if the LOD actually exists in available LODs (not just if text object exists)
+        # This determines if we need to show "??? tris" (LOD needs generation) or actual count
+        actual_lod_exists = (target_quixel_lod in self.lod_levels) if self.lod_levels else False
+        
         for item in self.lod_text_objects:
             try:
                 # Handle tuple (text_obj, lod_level, total_tris) or (text_obj, lod_level)
@@ -5537,49 +5554,68 @@ class ImportToolbar:
             except (AttributeError, ReferenceError):
                 continue
         
-        # If LOD doesn't exist, create a text object for it
+        # If LOD doesn't exist, create text objects for ALL variations (not just one)
         if not lod_exists:
-            # Find a reference text object to get position and size (use LOD0 or first available)
-            reference_text_obj = None
-            reference_text_data = None
+            import math
+            preview_lod_display = self.current_preview_lod
+            
+            # Group existing text objects by variation to find reference for each variation
+            # Text objects are named like: {variation_name}_LOD{lod_level}_Label
+            variations_with_text = {}
             for item in self.lod_text_objects:
                 try:
                     if isinstance(item, tuple) and len(item) >= 2:
                         ref_obj = item[0]
                         ref_quixel_lod = item[1]
-                        # Prefer LOD0, otherwise use first available
-                        if ref_quixel_lod == 0 or (reference_text_obj is None and ref_quixel_lod >= min_lod):
-                            reference_text_obj = ref_obj
-                            if reference_text_obj and reference_text_obj.data:
-                                reference_text_data = reference_text_obj.data
-                                if ref_quixel_lod == 0:
-                                    break
+                        # Extract variation name from text object name
+                        ref_name = ref_obj.name
+                        if "_LOD" in ref_name and "_Label" in ref_name:
+                            variation_name = ref_name.split("_LOD")[0]
+                            # Store reference text object for this variation (prefer LOD0)
+                            if variation_name not in variations_with_text:
+                                variations_with_text[variation_name] = None
+                            # Prefer LOD0 as reference, otherwise use first available
+                            if ref_quixel_lod == 0 or (variations_with_text[variation_name] is None and ref_quixel_lod >= min_lod):
+                                variations_with_text[variation_name] = ref_obj
                 except (AttributeError, ReferenceError):
                     continue
             
-            if reference_text_obj and reference_text_data:
-                # Create text object for missing LOD
-                import math
-                preview_lod_display = self.current_preview_lod
-                text_data = bpy.data.curves.new(name=f"Missing_LOD{target_quixel_lod}_Label", type='FONT')
+            # If no variations found in text objects, try to find variations from attach roots
+            if not variations_with_text and self.attach_roots:
+                for attach_root in self.attach_roots:
+                    # Try to find a text object that belongs to this attach root's variation
+                    # Look for text objects that are children of this attach root or in same collections
+                    for item in self.lod_text_objects:
+                        try:
+                            if isinstance(item, tuple) and len(item) >= 2:
+                                ref_obj = item[0]
+                                # Check if text object is related to this attach root
+                                if ref_obj.parent == attach_root or any(coll in attach_root.users_collection for coll in ref_obj.users_collection):
+                                    ref_name = ref_obj.name
+                                    if "_LOD" in ref_name and "_Label" in ref_name:
+                                        variation_name = ref_name.split("_LOD")[0]
+                                        if variation_name not in variations_with_text:
+                                            variations_with_text[variation_name] = ref_obj
+                                            break
+                        except (AttributeError, ReferenceError):
+                            continue
+            
+            # Create text object for each variation
+            created_any = False
+            for variation_name, reference_text_obj in variations_with_text.items():
+                if reference_text_obj is None or not reference_text_obj.data:
+                    continue
+                
+                reference_text_data = reference_text_obj.data
+                
+                # Create text object for missing LOD for this variation
+                text_data = bpy.data.curves.new(name=f"{variation_name}_LOD{target_quixel_lod}_Label", type='FONT')
                 text_data.body = f"LOD{preview_lod_display}\n??? tris"
                 text_data.align_x = 'CENTER'
                 text_data.align_y = 'BOTTOM'
                 text_data.size = reference_text_data.size
                 
-                # Use the same naming convention as regular text objects
-                # Extract variation name from reference text object name
-                reference_name = reference_text_obj.name
-                # Regular text objects are named like: {variation_name}_LOD{lod_level}_Label
-                # We'll use the same pattern but for the missing LOD
-                if "_LOD" in reference_name and "_Label" in reference_name:
-                    # Extract variation name (everything before "_LOD")
-                    variation_name = reference_name.split("_LOD")[0]
-                    text_obj_name = f"{variation_name}_LOD{target_quixel_lod}_Label"
-                else:
-                    # Fallback to old naming if we can't parse
-                    text_obj_name = f"Missing_LOD{target_quixel_lod}_Label"
-                
+                text_obj_name = f"{variation_name}_LOD{target_quixel_lod}_Label"
                 text_obj = bpy.data.objects.new(name=text_obj_name, object_data=text_data)
                 
                 # Link to the same collections as the reference text object
@@ -5598,11 +5634,13 @@ class ImportToolbar:
                 text_obj.rotation_euler.x = math.radians(90)
                 
                 # Set text color
+                # Compare Quixel LODs, not preview LOD positions, to fix color issue when minLOD > 0
                 text_data.materials.clear()
-                selected_lod = self.selected_lod_level if self.selected_lod_level is not None else 0
-                if preview_lod_display == selected_lod:
+                selected_lod_quixel = self.selected_lod_level if self.selected_lod_level is not None else 0
+                # Compare target_quixel_lod (current) with selected_lod_quixel (selected) - both are Quixel LODs
+                if target_quixel_lod == selected_lod_quixel:
                     text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
-                elif preview_lod_display < selected_lod:
+                elif target_quixel_lod < selected_lod_quixel:
                     text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
                 else:
                     text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
@@ -5613,36 +5651,73 @@ class ImportToolbar:
                 
                 # Store in lod_text_objects for future reference
                 self.lod_text_objects.append((text_obj, target_quixel_lod, 0))
+                created_any = True
+            
+            # If we created text objects, we need to find the one for the current variation to update
+            if created_any:
+                # Find the text object we just created (or use the first one if we can't determine variation)
+                for item in self.lod_text_objects:
+                    try:
+                        if isinstance(item, tuple) and len(item) >= 2:
+                            temp_text_obj = item[0]
+                            temp_quixel_lod = item[1]
+                            if temp_quixel_lod == target_quixel_lod:
+                                text_obj = temp_text_obj
+                                text_quixel_lod = temp_quixel_lod
+                                total_tris = 0
+                                lod_exists = True
+                                break
+                    except (AttributeError, ReferenceError):
+                        continue
             else:
                 return
         
-        # Now update the text object (either existing or newly created)
-        if not text_obj or not text_obj.data:
-            return
-            
-        text_data = text_obj.data
-        import bpy
-        import math
+        # Now update ALL text objects for the target LOD (for all variations)
+        # Find all text objects matching the target Quixel LOD
+        text_objects_to_update = []
+        for item in self.lod_text_objects:
+            try:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    temp_text_obj = item[0]
+                    temp_quixel_lod = item[1]
+                    temp_total_tris = item[2] if len(item) >= 3 else 0
+                    if temp_quixel_lod == target_quixel_lod:
+                        text_objects_to_update.append((temp_text_obj, temp_total_tris))
+            except (AttributeError, ReferenceError):
+                continue
         
-        # Update main text body (remove last line - will be in separate smaller text)
-        # Display preview LOD position, not Quixel LOD
+        # Update all text objects for this LOD
         preview_lod_display = self.current_preview_lod
-        if lod_exists:
-            text_data.body = f"LOD{preview_lod_display}\n{total_tris:,} tris"
-        else:
-            text_data.body = f"LOD{preview_lod_display}\n??? tris"
+        selected_lod_quixel = self.selected_lod_level if self.selected_lod_level is not None else 0
         
-        # Remove blue coloring - use normal white/gray based on hierarchy
-        # Use preview LOD for color hierarchy, not Quixel LOD
-        text_data.materials.clear()
-        selected_lod = self.selected_lod_level if self.selected_lod_level is not None else 0
-        if preview_lod_display == selected_lod:
-            # Use white instead of blue for selected
-            text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
-        elif preview_lod_display < selected_lod:
-            text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
-        else:
-            text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
+        for text_obj_to_update, obj_total_tris in text_objects_to_update:
+            if not text_obj_to_update or not text_obj_to_update.data:
+                continue
+            
+            text_data = text_obj_to_update.data
+            import bpy
+            import math
+            
+            # Update main text body
+            # Display preview LOD position, not Quixel LOD
+            # Use actual_lod_exists to determine if we show "??? tris" (LOD needs generation)
+            # If LOD doesn't exist in available LODs, show "??? tris" even if text object exists
+            if actual_lod_exists:
+                text_data.body = f"LOD{preview_lod_display}\n{obj_total_tris:,} tris"
+            else:
+                text_data.body = f"LOD{preview_lod_display}\n??? tris"
+            
+            # Remove blue coloring - use normal white/gray based on hierarchy
+            # Compare Quixel LODs, not preview LOD positions, to fix color issue when minLOD > 0
+            text_data.materials.clear()
+            # Compare target_quixel_lod (current) with selected_lod_quixel (selected) - both are Quixel LODs
+            if target_quixel_lod == selected_lod_quixel:
+                # Use white instead of blue for selected
+                text_data.materials.append(self._get_or_create_text_material("LOD_Selected", (1.0, 1.0, 1.0, 1.0)))
+            elif target_quixel_lod < selected_lod_quixel:
+                text_data.materials.append(self._get_or_create_text_material("LOD_Below", (0.15, 0.15, 0.15, 1.0)))
+            else:
+                text_data.materials.append(self._get_or_create_text_material("LOD_Above", (0.9, 0.9, 0.9, 1.0)))
         
 
     def _delete_text_labels(self):

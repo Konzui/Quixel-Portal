@@ -269,10 +269,10 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
                 parent_name_lower = parent.name.lower()
                 if parent_name_lower.startswith("lod"):
                     lod_num = parent_name_lower[3:]
-                if lod_num.isdigit():
-                    lod_level = lod_num
-                    lod_found_in_name = True
-                    break
+                    if lod_num.isdigit():
+                        lod_level = lod_num
+                        lod_found_in_name = True
+                        break
         
         # Check if this is a billboard texture
         is_billboard = is_billboard_texture(tex_file.stem)
