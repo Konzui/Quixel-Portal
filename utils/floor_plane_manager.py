@@ -41,7 +41,7 @@ def create_floor_plane(context):
         # Create material
         floor_mat = bpy.data.materials.new(name="__QuixelFloorMaterial__")
         floor_mat.use_nodes = True
-        floor_mat.blend_method = 'BLEND'  # Enable transparency
+        floor_mat.blend_method = 'BLEND'  # Smooth gradient transparency (imported models use HASHED to avoid sorting conflicts)
         floor_mat.use_backface_culling = True  # Single-sided rendering
 
         nodes = floor_mat.node_tree.nodes

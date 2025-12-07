@@ -77,8 +77,8 @@ def create_material_from_textures(material_name, textures, context):
         if opacity_node:
             # Connect to Alpha input of Principled BSDF
             links.new(opacity_node.outputs['Color'], bsdf.inputs['Alpha'])
-            # Enable alpha blending for the material
-            mat.blend_method = 'BLEND'
+            # Use HASHED for grass/foliage with alpha cutouts (avoids transparency sorting issues)
+            mat.blend_method = 'HASHED'
             # Print removed to reduce console clutter
     
     # Print removed to reduce console clutter
