@@ -34,7 +34,6 @@ class QuixelBridgeHub:
             bool: True if started successfully
         """
         if self.running:
-            print("ℹ️ QuixelBridge Hub: Already running")
             return True
 
         # Register as hub in shared state (no pipe name needed)
@@ -42,14 +41,11 @@ class QuixelBridgeHub:
             print("❌ QuixelBridge Hub: Failed to register in shared state")
             return False
 
-        print(f"✅ QuixelBridge Hub: Registered as hub (PID: {self.hub_pid})")
-
         # Start heartbeat thread for state management
         self.running = True
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
 
-        print(f"✅ QuixelBridge Hub: Started with file-based coordination")
         return True
 
     def stop(self):
@@ -57,7 +53,6 @@ class QuixelBridgeHub:
         if not self.running:
             return
 
-        print("🛑 QuixelBridge Hub: Stopping...")
         self.running = False
 
         # Wait for heartbeat thread to finish
@@ -66,8 +61,6 @@ class QuixelBridgeHub:
 
         # Cleanup shared state
         self.state.cleanup()
-
-        print("✅ QuixelBridge Hub: Stopped")
 
     def route_import_data(self, import_requests: list):
         """Route import data from Bridge to the active instance.
@@ -84,7 +77,6 @@ class QuixelBridgeHub:
         active_pid = self.active_instance.get('pid')
         active_name = self.active_instance.get('name', 'Unknown')
 
-        print(f"📤 QuixelBridge Hub: Routing import to {active_name} (PID: {active_pid})")
 
         # If active instance is the hub itself, handle locally
         if active_pid == self.hub_pid:
@@ -100,7 +92,6 @@ class QuixelBridgeHub:
         Args:
             import_requests: List of import requests to process
         """
-        print(f"📥 QuixelBridge Hub: Handling import locally ({len(import_requests)} asset(s))")
 
         # Queue imports using the existing mechanism
         from .quixel_bridge_socket import _bridge_data_lock, _pending_imports
@@ -123,8 +114,6 @@ class QuixelBridgeHub:
             }
         })
 
-        print(f"✅ QuixelBridge Hub: Stored import data for PID {target_pid}")
-
     def _sync_state_from_file(self):
         """Synchronize local state from shared state file."""
         state = self.state.read()
@@ -135,8 +124,6 @@ class QuixelBridgeHub:
         active_instance = state.get('active_instance')
         if active_instance != self.active_instance:
             self.active_instance = active_instance
-            if active_instance:
-                print(f"📋 QuixelBridge Hub: Active instance updated to {active_instance.get('name')} (PID: {active_instance.get('pid')})")
 
         # Sync registered instances
         self.registered_instances = state.get('registered_instances', [])

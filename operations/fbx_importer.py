@@ -41,12 +41,8 @@ def detect_3d_plant_structure(asset_dir):
         if match:
             var_index = int(match.group(1)) - 1  # Convert to 0-based index (Var 1 -> 0, Var 2 -> 1)
             variation_folders[var_index] = item
-            print(f"🌱 [3D PLANT] Found variation folder: {item.name} -> index {var_index}")
     
     is_3d_plant = len(variation_folders) > 0
-    
-    if is_3d_plant:
-        print(f"🌱 [3D PLANT] Detected 3D plant structure with {len(variation_folders)} variation(s)")
     
     return is_3d_plant, variation_folders
 
@@ -74,8 +70,6 @@ def detect_lod_levels_from_fbx(fbx_files):
     
     sorted_lods = sorted(lod_levels) if lod_levels else [0]
     max_lod = max(sorted_lods) if sorted_lods else 0
-    
-    print(f"🔍 [LOD DETECTION] Detected LOD levels: {sorted_lods} (max: {max_lod})")
     
     return sorted_lods, max_lod
 
@@ -107,8 +101,6 @@ def find_fbx_files(asset_dir, detect_plants=True):
     all_fbx_files = list(asset_dir.glob("**/*.fbx"))
     
     if is_3d_plant:
-        print(f"🌱 [3D PLANT] Found {len(all_fbx_files)} FBX file(s) total")
-        
         # Map each FBX file to its variation folder
         for fbx_file in all_fbx_files:
             # Find which variation folder this FBX belongs to
@@ -117,14 +109,9 @@ def find_fbx_files(asset_dir, detect_plants=True):
                     # Check if FBX is inside this variation folder
                     if var_folder in fbx_file.parents or fbx_file.parent == var_folder:
                         fbx_variation_map[fbx_file] = var_index
-                        print(f"🌱 [3D PLANT]   {fbx_file.name} -> Variation {var_index} (from {var_folder.name})")
                         break
                 except:
                     pass
-            
-            # If not found in any variation folder, it might be in root (shared)
-            if fbx_file not in fbx_variation_map:
-                print(f"🌱 [3D PLANT]   {fbx_file.name} -> No variation folder (root/shared)")
     
     return all_fbx_files, is_3d_plant, fbx_variation_map
 
@@ -239,20 +226,15 @@ def apply_transforms(objects):
     """
     import math
     
-    # Header and detail prints removed to reduce console clutter
-    
     failed_objects = []
     
     for obj in objects:
         if obj.type != 'MESH' or not obj.data:
-            # Print removed to reduce console clutter
             continue
         
         # Store original values for debug
         orig_scale = obj.scale.copy()
         orig_rotation = obj.rotation_euler.copy()
-        
-        # Print removed to reduce console clutter
         
         # Select object
         bpy.ops.object.select_all(action='DESELECT')
@@ -263,22 +245,13 @@ def apply_transforms(objects):
         # This bakes them into the mesh vertex positions
         bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
         
-        # Print removed to reduce console clutter
-        
         # Verify transforms are now neutral
         scale_ok = all(abs(s - 1.0) < 0.001 for s in obj.scale)
         rotation_ok = all(abs(r) < 0.001 for r in obj.rotation_euler)
         
-        if scale_ok and rotation_ok:
-            # Print removed to reduce console clutter
-            pass
-        else:
-            # Print removed to reduce console clutter
+        if not (scale_ok and rotation_ok):
             failed_objects.append(obj.name)
     
     # Clear selection
     bpy.ops.object.select_all(action='DESELECT')
-    
-    # Report any failures (prints removed to reduce console clutter)
-    # Failed objects are still tracked in failed_objects list for potential future use
 

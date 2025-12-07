@@ -38,7 +38,6 @@ class QuixelBridgeClient:
             bool: True if started successfully
         """
         if self.running:
-            print("ℹ️ QuixelBridge Client: Already running")
             return True
 
         # Check if hub exists
@@ -65,7 +64,6 @@ class QuixelBridgeClient:
         if not self.running:
             return
 
-        print("🛑 QuixelBridge Client: Stopping...")
         self.running = False
 
         # Unregister from hub via shared state
@@ -148,7 +146,6 @@ class QuixelBridgeClient:
                 if active_instance and active_instance.get('pid') == self.instance_pid:
                     if not self._is_active:
                         self._is_active = True
-                        print(f"📋 QuixelBridge Client: Became active instance")
 
                     # Check for pending imports
                     import_key = f'pending_import_{self.instance_pid}'
@@ -158,7 +155,6 @@ class QuixelBridgeClient:
                         import_requests = pending_import.get('import_requests', [])
 
                         if import_requests:
-                            print(f"📥 QuixelBridge Client: Received {len(import_requests)} import(s) from hub")
 
                             # Process imports
                             self._process_imports(import_requests)
@@ -169,7 +165,6 @@ class QuixelBridgeClient:
                 else:
                     if self._is_active:
                         self._is_active = False
-                        print(f"📋 QuixelBridge Client: No longer active instance")
 
                 # Poll interval
                 time.sleep(0.5)

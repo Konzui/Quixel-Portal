@@ -29,7 +29,6 @@ def create_material_from_textures(material_name, textures, context):
     # Check if material already exists - if so, reuse it
     if material_name in bpy.data.materials:
         mat = bpy.data.materials[material_name]
-        print(f"  ♻️  Reusing existing material: {material_name}")
         return mat
 
     # Create new material
@@ -142,9 +141,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
     """
     asset_dir = Path(asset_dir)
 
-    print(f"🔍 [VARIATION TEXTURES] Looking for textures for variation: '{variation_suffix}'")
-    print(f"🔍 [VARIATION TEXTURES] Asset directory: {asset_dir}")
-    
     # For 3D plants, find the variation folder for this variation
     search_dir = asset_dir
     if is_3d_plant and variation_folders:
@@ -157,9 +153,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
         
         if variation_index in variation_folders:
             search_dir = variation_folders[variation_index]
-            print(f"🌱 [3D PLANT] Searching for textures in variation folder: {search_dir.name}")
-        else:
-            print(f"🌱 [3D PLANT] ⚠️  Variation folder not found for index {variation_index}, searching root")
     
     # Also search root directory for shared textures (billboard textures might be there)
     # Find all texture files in both the variation folder (for 3D plants) and root directory
@@ -173,21 +166,12 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
     if is_3d_plant and search_dir != asset_dir:
         root_textures = find_texture_files(asset_dir, texture_resolution=texture_resolution)
         texture_files.extend(root_textures)
-        print(f"🌱 [3D PLANT] Found {len(variation_textures)} texture(s) in variation folder, {len(root_textures)} in root")
     
     # Remove duplicates
     texture_files = list(set(texture_files))
     
     if not texture_files:
-        print(f"🔍 [VARIATION TEXTURES] No texture files found, returning empty dict")
         return {}
-    
-    print(f"🔍 [VARIATION TEXTURES] Processing {len(texture_files)} texture files for variation '{variation_suffix}'")
-    
-    # Debug: Show billboard textures found (reduced print spam)
-    billboard_count = sum(1 for tex_file in texture_files if is_billboard_texture(tex_file.stem))
-    if billboard_count > 0:
-        print(f"🌱 [BILLBOARD] Found {billboard_count} billboard texture(s) in {len(texture_files)} total texture(s)")
     
     # Pattern to extract LOD level from FBX filenames (still needed for import groups)
     lod_pattern = re.compile(r'_?LOD(\d+)', re.IGNORECASE)
@@ -285,11 +269,10 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
                 parent_name_lower = parent.name.lower()
                 if parent_name_lower.startswith("lod"):
                     lod_num = parent_name_lower[3:]
-                    if lod_num.isdigit():
-                        lod_level = lod_num
-                        lod_found_in_name = True
-                        print(f"🌱 [3D PLANT] Found LOD {lod_level} from folder: {parent.name}")
-                        break
+                if lod_num.isdigit():
+                    lod_level = lod_num
+                    lod_found_in_name = True
+                    break
         
         # Check if this is a billboard texture
         is_billboard = is_billboard_texture(tex_file.stem)
@@ -310,7 +293,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
                 lod_textures['billboard_textures'] = {}
             if tex_type not in lod_textures['billboard_textures']:
                 lod_textures['billboard_textures'][tex_type] = tex_file
-            print(f"🌱 [BILLBOARD] Detected billboard texture: {tex_file.name} (type: {tex_type})")
         else:
             # Regular texture - assign to the detected LOD level
             # If no LOD found, it will default to LOD 0, but we'll distribute it later
@@ -326,9 +308,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
             # If there's already a texture of this type, keep the existing one
             if tex_type not in lod_textures[lod_level]:
                 lod_textures[lod_level][tex_type] = texture_info
-        # Debug: Show LOD detection (only for billboard textures to reduce spam)
-        if not lod_found_in_name and is_billboard:
-            print(f"🌱 [BILLBOARD] No LOD found in '{tex_file.name}', assigned to LOD {lod_level}")
     
     # Get all LOD levels that have objects (from FBX imports)
     lod_levels_with_objects = set()
@@ -341,8 +320,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
     # Find the highest/last LOD level
     all_lod_levels = sorted(lod_levels_with_objects, key=lambda x: int(x))
     last_lod_level = all_lod_levels[-1] if all_lod_levels else "0"
-    
-    print(f"🌱 [BILLBOARD] Last LOD level: {last_lod_level} (out of {len(all_lod_levels)} LOD level(s))")
     
     # Extract billboard textures (stored separately)
     billboard_textures_dict = lod_textures.pop('billboard_textures', {})
@@ -380,7 +357,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
     if textures_without_lod:
         has_billboard = bool(billboard_textures_dict)
         if has_billboard:
-            print(f"🌱 [3D PLANT] Distributing {len(textures_without_lod)} texture(s) without LOD info to LODs 0-{int(last_lod_level)-1} (LOD {last_lod_level} will use billboard)")
             # Distribute to all LODs except last (last will use billboard)
             for lod_level in all_lod_levels:
                 if lod_level == last_lod_level:
@@ -390,7 +366,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
                     if tex_type not in regular_textures[lod_level]:
                         regular_textures[lod_level][tex_type] = tex_path
         else:
-            print(f"🌱 [3D PLANT] Distributing {len(textures_without_lod)} texture(s) without LOD info to ALL LODs (no billboard found)")
             # No billboard textures - distribute to all LODs including last
             for lod_level in all_lod_levels:
                 for tex_type, tex_path in textures_without_lod.items():
@@ -399,20 +374,8 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
     
     # Assign billboard textures to last LOD
     if billboard_textures_dict:
-        print(f"🌱 [BILLBOARD] Found {len(billboard_textures_dict)} billboard texture type(s)")
         for tex_type, tex_path in billboard_textures_dict.items():
             billboard_textures[last_lod_level][tex_type] = tex_path
-    else:
-        print(f"🌱 [BILLBOARD] No billboard textures found - last LOD will use regular textures")
-    
-    # Debug: Show summary of billboard and regular textures (reduced print spam)
-    billboard_summary = {lod: list(tex.keys()) for lod, tex in billboard_textures.items() if tex}
-    regular_summary = {lod: list(tex.keys()) for lod, tex in regular_textures.items() if tex}
-    
-    if billboard_summary:
-        print(f"🌱 [BILLBOARD] Billboard textures: {billboard_summary}")
-    if regular_summary:
-        print(f"🌱 [BILLBOARD] Regular textures: {regular_summary}")
     
     # Now assign textures: billboard only to last LOD, regular to all LODs
     final_lod_textures = {}
@@ -457,21 +420,6 @@ def find_textures_for_variation(asset_dir, variation_suffix, import_groups, text
                         break
     
     lod_textures = final_lod_textures
-    
-    # Summary print
-    total_textures = sum(len(textures) for textures in lod_textures.values())
-    billboard_count = 0
-    if last_lod_level in lod_textures:
-        for tex_type, tex_path in lod_textures[last_lod_level].items():
-            if is_billboard_texture(tex_path.stem if hasattr(tex_path, 'stem') else str(tex_path)):
-                billboard_count += 1
-    
-    if total_textures > 0:
-        print(f"✅ Found {total_textures} texture(s) for variation '{variation_suffix}' across {len(lod_textures)} LOD level(s)")
-        if billboard_count > 0:
-            print(f"🌱 [BILLBOARD] {billboard_count} billboard texture(s) assigned to last LOD {last_lod_level}")
-    else:
-        print(f"⚠️  No textures found for variation '{variation_suffix}'")
     
     return lod_textures
 
@@ -564,41 +512,22 @@ def create_surface_material(asset_dir, context):
         return False
     
     # Find all texture files
-    print(f"🔍 [SURFACE MATERIAL] Looking for textures in: {asset_dir}")
     texture_files = find_texture_files(asset_dir)
 
     if not texture_files:
         print(f"  ⚠️ No texture files found in {asset_dir}")
         return False
 
-    print(f"🔍 [SURFACE MATERIAL] Found {len(texture_files)} texture files")
-    print(f"🔍 [SURFACE MATERIAL] All potential textures:")
-    for tex_file in texture_files:
-        print(f"    - {tex_file.name}")
-
     # Check if material already exists - if so, reuse it
     if material_name in bpy.data.materials:
         mat = bpy.data.materials[material_name]
-        print(f"  ♻️  Reusing existing surface material: {material_name}")
     else:
         # Organize textures by type
         textures = {}
-        print(f"🔍 [SURFACE MATERIAL] Organizing textures by type...")
         for tex_file in texture_files:
-            print(f"    Processing: {tex_file.name}")
             tex_type = identify_texture_type(tex_file.stem)
             if tex_type:
-                if tex_type in textures:
-                    print(f"      ⚠️  Texture type '{tex_type}' already assigned to {textures[tex_type].name}, replacing with {tex_file.name}")
-                else:
-                    print(f"      ✅ Assigned type '{tex_type}'")
                 textures[tex_type] = tex_file
-            else:
-                print(f"      ❌ Could not identify texture type - SKIPPING")
-        
-        print(f"🔍 [SURFACE MATERIAL] Final texture assignment:")
-        for tex_type, tex_path in textures.items():
-            print(f"    {tex_type}: {tex_path.name}")
 
         # Create material
         mat = create_material_from_textures(material_name, textures, context)
@@ -612,11 +541,7 @@ def create_surface_material(asset_dir, context):
                 obj.data.materials.append(mat)
             else:
                 obj.data.materials[0] = mat
-            print(f"    ✅ Assigned material to selected object: {obj.name}")
-    else:
-        print(f"  ℹ️  No mesh objects selected - material created but not assigned")
     
-    print(f"  🎨 Created surface material: {material_name}")
     return True
 
 
@@ -649,8 +574,6 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
     
     # Process each variation
     for variation_suffix in sorted(variations.keys()):
-        # Print removed to reduce console clutter
-        
         # Get textures for this variation
         variation_textures = find_textures_for_variation(
             asset_dir, 
@@ -704,42 +627,21 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
             
             # For the last LOD level, always create a separate material (for billboard support)
             # Include LOD level in hash to ensure unique material
-            if lod_level == last_lod_level:
-                print(f"🌱 [BILLBOARD] LOD {lod_level} (last LOD) - forcing separate material")
             
             # Calculate hash with normalized textures
             texture_hash = get_texture_hash(normalized_textures)
             if lod_level == last_lod_level:
                 texture_hash = texture_hash + f"_LOD{lod_level}"
             
-            # Debug: Show what textures are being used for this LOD
-            texture_names = {}
-            for k, v in normalized_textures.items():
-                if v:
-                    try:
-                        # Handle both Path objects and strings
-                        if isinstance(v, Path):
-                            texture_names[k] = v.name
-                        else:
-                            texture_names[k] = Path(v).name
-                    except (TypeError, AttributeError):
-                        texture_names[k] = str(v)
-                else:
-                    texture_names[k] = None
-            print(f"🌱 [MATERIAL] LOD {lod_level}: textures = {texture_names}")
-            
             # Check if material already exists in cache
             if texture_hash in material_cache:
                 # Reuse existing material
                 mat = material_cache[texture_hash]
-                print(f"🌱 [MATERIAL] LOD {lod_level}: Reusing material (hash: {texture_hash[:8]}...)")
             else:
                 # Create new material (use normalized textures)
                 material_name = f"{attach_root_name}_LOD{lod_level}"
                 mat = create_material_from_textures(material_name, normalized_textures, context)
                 material_cache[texture_hash] = mat
-                material_cache[texture_hash] = mat
-                print(f"🌱 [MATERIAL] LOD {lod_level}: Created new material '{material_name}' (hash: {texture_hash[:8]}...)")
             
             # Assign material to objects from this LOD level
             if lod_level in lod_objects:
@@ -748,11 +650,4 @@ def create_materials_for_all_variations(asset_dir, attach_root_base_name, variat
                     obj.data.materials.clear()
                     # Assign our custom material
                     obj.data.materials.append(mat)
-                    # Print removed to reduce console clutter
-    
-    # Summary prints removed to reduce console clutter
-    # unique_materials = len(material_cache)
-    # total_variations = len(variations)
-    # total_lods = len(all_lod_levels)
-    # max_possible = total_variations * total_lods
 

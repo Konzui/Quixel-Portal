@@ -153,8 +153,6 @@ def create_floor_plane(context):
         else:
             floor_obj.data.materials.append(floor_mat)
 
-        print(f"✅ Created temporary floor disc with dev texture (infinite appearance, single-sided)")
-
         return floor_obj, floor_mat
 
     except Exception as e:
@@ -180,9 +178,8 @@ def cleanup_floor_plane(floor_obj=None, floor_mat=None):
         if floor_obj:
             try:
                 bpy.data.objects.remove(floor_obj, do_unlink=True)
-                print(f"✅ Removed temporary floor plane")
             except Exception as e:
-                print(f"⚠️ Could not remove floor object: {e}")
+                pass
 
         # Find floor material if not provided
         if floor_mat is None:
@@ -192,9 +189,8 @@ def cleanup_floor_plane(floor_obj=None, floor_mat=None):
         if floor_mat:
             try:
                 bpy.data.materials.remove(floor_mat)
-                print(f"✅ Removed temporary floor material")
             except Exception as e:
-                print(f"⚠️ Could not remove floor material: {e}")
+                pass
 
     except Exception as e:
         print(f"⚠️ Error during floor plane cleanup: {e}")

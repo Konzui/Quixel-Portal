@@ -31,7 +31,6 @@ def load_texture(nodes, tex_type, tex_path, color_space='sRGB'):
         img = bpy.data.images.load(str(tex_path))
         img.colorspace_settings.name = color_space
         tex_node.image = img
-        # Print removed to reduce console clutter
         return tex_node
     except Exception as e:
         print(f"    ❌ Failed to load {tex_type} texture {Path(tex_path).name}: {e}")
@@ -84,9 +83,6 @@ def find_texture_files(asset_dir, extensions=None, texture_resolution=None):
                 filtered_files.append(tex_file)
 
         texture_files = filtered_files
-        print(f"🔍 Found {len(texture_files)} texture file(s) matching resolution '{texture_resolution}'")
-    else:
-        print(f"🔍 Found {len(texture_files)} texture file(s)")
 
     return texture_files
 

@@ -75,49 +75,8 @@ def _print_performance_breakdown():
     """Print a detailed performance breakdown after accept/cancel."""
     global _performance_data
     
-    print(f"⏱️  PERFORMANCE BREAKDOWN")
-    
-    # Import timing
-    if _performance_data['import_start_time']:
-        total_import_time = time.time() - _performance_data['import_start_time']
-        print(f"\n📥 ASSET IMPORT:")
-        print(f"   Total Import Time: {_format_time_ms(total_import_time)}")
-        
-        if _performance_data['import_times']:
-            print(f"   Breakdown:")
-            for step_name, step_time in _performance_data['import_times'].items():
-                percentage = (step_time / total_import_time * 100) if total_import_time > 0 else 0
-                print(f"      - {step_name}: {_format_time_ms(step_time)} ({percentage:.2f}%)")
-    
-    # LOD switching
-    if _performance_data['lod_switch_times']:
-        total_lod_time = sum(_performance_data['lod_switch_times'])
-        avg_lod_time = total_lod_time / len(_performance_data['lod_switch_times'])
-        min_lod_time = min(_performance_data['lod_switch_times'])
-        max_lod_time = max(_performance_data['lod_switch_times'])
-        
-        print(f"\n🎚️  LOD SWITCHING:")
-        print(f"   Total Switches: {len(_performance_data['lod_switch_times'])}")
-        print(f"   Total Time: {_format_time_ms(total_lod_time)}")
-        print(f"   Average Time: {_format_time_ms(avg_lod_time)}")
-        print(f"   Min Time: {_format_time_ms(min_lod_time)}")
-        print(f"   Max Time: {_format_time_ms(max_lod_time)}")
-    
-    # Accept/Cancel timing
-    if _performance_data['accept_start_time']:
-        accept_time = time.time() - _performance_data['accept_start_time']
-        print(f"\n✅ ACCEPT OPERATION:")
-        print(f"   Time: {_format_time_ms(accept_time)}")
-    
-    if _performance_data['cancel_start_time']:
-        cancel_time = time.time() - _performance_data['cancel_start_time']
-        print(f"\n❌ CANCEL OPERATION:")
-        print(f"   Time: {_format_time_ms(cancel_time)}")
-    
-    # Total operations
-    print(f"\n📊 SUMMARY:")
-    print(f"   Total Operations Tracked: {_performance_data['total_operations']}")
-    
+    # Performance breakdown disabled - prints removed to reduce console clutter
+    # Data is still tracked internally if needed for future debugging
     
     # Reset performance data
     _performance_data = {
@@ -139,14 +98,12 @@ def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=Tr
         skip_if_temp_scene: If True, skip framing if we're in a temp preview scene
     """
     if not imported_objects:
-        print(f"  ⚠️ No objects to frame")
         return
 
     # Always use fresh context to avoid stale references
     try:
         context = bpy.context
     except:
-        print(f"  ⚠️ Could not get valid context for framing")
         return
 
     # Skip framing in temp scenes to avoid crashes with invalid depsgraph
@@ -154,12 +111,9 @@ def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=Tr
         try:
             scene_name = context.scene.name if context.scene else None
             if scene_name and scene_name.startswith("__QuixelPreview__"):
-                print(f"  ⚠️ Skipping frame in temp preview scene to avoid crashes")
                 return
         except:
             pass
-
-    print(f"  🎯 Framing {len(imported_objects)} object(s)...")
 
     # Filter to only valid, existing objects
     valid_objects = []
@@ -171,10 +125,7 @@ def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=Tr
             continue
 
     if not valid_objects:
-        print(f"  ⚠️ No valid objects found to frame")
         return
-
-    print(f"  🎯 Found {len(valid_objects)} valid object(s)")
 
     try:
         # Deselect all objects first
@@ -212,13 +163,9 @@ def frame_imported_objects(imported_objects, context=None, skip_if_temp_scene=Tr
                 with context.temp_override(area=area, region=region):
                     try:
                         bpy.ops.view3d.view_selected()
-                        print(f"  ✅ Successfully framed objects in viewport")
                         return
                     except Exception as e:
-                        print(f"  ⚠️ Could not frame view: {e}")
                         continue
-
-        print(f"  ⚠️ No 3D viewport found for framing")
 
     except Exception as e:
         print(f"  ⚠️ Could not frame imported objects: {e}")
@@ -259,11 +206,10 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     from .ui.import_modal import get_active_toolbar
     active_toolbar = get_active_toolbar()
     if active_toolbar:
-        print(f"⚠️  Canceling active toolbar from previous import")
         try:
             active_toolbar._handle_cancel(None)
         except Exception as e:
-            print(f"⚠️  Failed to cancel active toolbar: {e}")
+            pass
 
     # Track materials that exist before import
     materials_before_import = set(bpy.data.materials.keys())
@@ -274,8 +220,6 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     if not asset_dir.exists():
         print(f"❌ Asset directory not found: {asset_dir}")
         return {'CANCELLED'}
-    
-    print(f"📁 Asset directory: {asset_dir}")
     
     # Check if folder is empty before attempting import
     is_empty, empty_error = is_folder_empty(asset_dir)
@@ -299,7 +243,6 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     
     if asset_type == 'surface':
         # Handle surface material
-        print(f"✅ Detected surface material (JSON + textures)")
         if create_surface_material(asset_dir, context):
             # Force Blender to update the viewport/depsgraph before notifying
             bpy.context.view_layer.update()
@@ -389,10 +332,8 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     bpy.data.objects.remove(obj, do_unlink=True)
                 except:
                     pass
-            if objects_to_remove:
-                print(f"  🧹 Cleaned {len(objects_to_remove)} leftover object(s) from temp scene")
         except Exception as e:
-            print(f"  ⚠️ Could not clean temp scene: {e}")
+            pass
 
         # Create temporary floor plane with dev texture
         floor_obj, floor_mat = create_floor_plane(context)
@@ -416,7 +357,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     # Detect LOD levels from FBX filenames BEFORE importing
     from .operations.fbx_importer import detect_lod_levels_from_fbx
     detected_lod_levels, max_lod = detect_lod_levels_from_fbx(fbx_files)
-    print(f"🔍 [LOD DETECTION] Detected {len(detected_lod_levels)} LOD level(s), max LOD: {max_lod}")
 
     # STEP 1: Import all FBX files
     step_start = time.time()
@@ -561,14 +501,12 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                         child.scale.x *= old_root_scale.x
                         child.scale.y *= old_root_scale.y
                         child.scale.z *= old_root_scale.z
-                        print(f"    📏 Applied root scale to child: {child.name} -> scale={child.scale}")
                     
                     # Unparent the child
                     child.parent = None
             
             # Remove old world root objects
             for old_root in old_world_roots:
-                print(f"      - Deleting: {old_root.name}")
                 bpy.data.objects.remove(old_root, do_unlink=True)
                 imported_objects.remove(old_root)
             
@@ -589,9 +527,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     break  # Use the first mesh object's scale
             
             all_objects_to_process.extend(imported_objects)
-            
-            if old_world_roots:
-                print(f"  ✅ Removed {len(old_world_roots)} old world root object(s) from: {fbx_file.name}")
         
         # Use detected scale or default to 0.01 if not found
         if detected_scale is None:
@@ -620,7 +555,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         
         step4_start = time.time()
         if is_3d_plant:
-            print(f"🌱 [3D PLANT] Using folder-based variation organization")
             from .operations.asset_processor import organize_3d_plant_objects_by_variation
             variations = organize_3d_plant_objects_by_variation(import_groups)
         else:
@@ -690,8 +624,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
     # Check if Glacier Setup is enabled
     if not glacier_setup:
         # Import directly without showing toolbar - assets are already in original scene
-        print(f"✅ Import complete - {len(all_imported_objects_tracker)} objects imported")
-        
         # Select and frame the imported objects
         frame_imported_objects(all_imported_objects_tracker, context)
 
@@ -751,7 +683,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         # Print removed to reduce console clutter
 
     # Frame imported objects immediately after import
-    print(f"🎯 Attempting to frame {len(all_imported_objects_tracker)} imported objects in preview scene")
     frame_imported_objects(all_imported_objects_tracker, context, skip_if_temp_scene=False)
 
     # Validate context one more time before showing toolbar to prevent crashes
@@ -798,7 +729,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
         
         # Set max LOD dropdown to detected maximum
         if max_lod is not None:
-            print(f"🔍 [TOOLBAR] Setting max LOD dropdown to LOD{max_lod}")
             toolbar.set_max_lod(max_lod)
 
         # Position LODs for preview with text labels
@@ -833,7 +763,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                 cleanup_preview_scene(temp_scene)
 
                 # Frame the view to show transferred objects in original scene
-                print(f"🎯 ABOUT TO FRAME {len(transferred_objects)} TRANSFERRED OBJECTS")
                 frame_imported_objects(transferred_objects, bpy.context, skip_if_temp_scene=False)
 
                 # Print removed to reduce console clutter
@@ -859,8 +788,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
             # Start cancel timing
             _performance_data['cancel_start_time'] = time.time()
 
-            print(f"❌ USER CANCELLED IMPORT - DISCARDING ASSETS")
-
             try:
                 # Clean up temporary floor plane before cleanup
                 cleanup_floor_plane(floor_obj, floor_mat)
@@ -876,8 +803,6 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                     all_imported_materials_tracker,
                     materials_before_import
                 )
-
-                print(f"✅ Import cancelled - all assets discarded")
 
             except Exception as e:
                 print(f"\n⚠️ Error during cancel cleanup: {e}")

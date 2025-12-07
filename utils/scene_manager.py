@@ -59,8 +59,6 @@ def create_preview_scene(context, base_name="__QuixelPreview__"):
     # Copy view layer settings
     temp_scene.view_layers[0].use_pass_combined = True
 
-    print(f"✅ Created temporary preview scene: {temp_scene.name}")
-
     return temp_scene
 
 
@@ -90,7 +88,6 @@ def switch_to_scene(context, target_scene):
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
 
-        # Print removed to reduce console clutter
         return True
 
     except Exception as e:
@@ -126,7 +123,6 @@ def transfer_assets_to_original_scene(
         try:
             # Check if object still exists
             if obj.name not in bpy.data.objects:
-                # Print removed to reduce console clutter
                 continue
             
             # Add the object itself
@@ -164,18 +160,12 @@ def transfer_assets_to_original_scene(
             original_scene.collection.objects.link(obj)
             transferred_objects.append(obj)
 
-            # Print removed to reduce console clutter
-
         except Exception as e:
-            # Print removed to reduce console clutter
             import traceback
             traceback.print_exc()
 
     # Materials are stored globally in bpy.data.materials
     # They're automatically available in all scenes, no transfer needed
-    # Print removed to reduce console clutter
-
-    # Print removed to reduce console clutter
 
     return transferred_objects
 
@@ -207,8 +197,6 @@ def cleanup_preview_scene(temp_scene):
         # Objects that are ONLY in this scene will be deleted
         # Objects linked to other scenes will remain
         bpy.data.scenes.remove(temp_scene, do_unlink=True)
-
-        # Print removed to reduce console clutter
 
     except Exception as e:
         print(f"⚠️ Failed to delete preview scene: {e}")
@@ -247,9 +235,6 @@ def cleanup_orphaned_preview_scenes():
         except Exception as e:
             print(f"⚠️ Failed to remove orphaned scene '{scene.name}': {e}")
 
-    if removed_count > 0:
-        print(f"🧹 Cleaned up {removed_count} orphaned preview scene(s)")
-
 
 def cleanup_imported_materials(imported_materials, materials_before_import):
     """Clean up materials that were created during import.
@@ -260,8 +245,6 @@ def cleanup_imported_materials(imported_materials, materials_before_import):
         imported_materials: List of materials created during import
         materials_before_import: Set of material names that existed before import
     """
-    print(f"\n🧹 CLEANING UP IMPORTED MATERIALS:")
-
     removed_count = 0
 
     for mat in imported_materials:
@@ -283,7 +266,6 @@ def cleanup_imported_materials(imported_materials, materials_before_import):
             if mat_name not in materials_before_import:
                 # Remove the material
                 bpy.data.materials.remove(mat, do_unlink=True)
-                print(f"  🗑️ Removed: {mat_name}")
                 removed_count += 1
 
         except ReferenceError:
@@ -295,11 +277,6 @@ def cleanup_imported_materials(imported_materials, materials_before_import):
                 print(f"  ⚠️ Failed to remove material '{mat_name}': {e}")
             else:
                 print(f"  ⚠️ Failed to remove material (already deleted): {e}")
-
-    if removed_count > 0:
-        print(f"  ✅ Cleaned up {removed_count} material(s)")
-    else:
-        print(f"  ℹ️ No materials to clean up (may have been auto-deleted with preview scene)")
 
 
 def setup_preview_camera(temp_scene, imported_objects):
@@ -360,5 +337,3 @@ def setup_preview_camera(temp_scene, imported_objects):
 
     # Set as active camera
     temp_scene.camera = camera_obj
-
-    print(f"✅ Created preview camera framing {len(imported_objects)} object(s)")

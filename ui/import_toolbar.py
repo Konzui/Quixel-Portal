@@ -2556,28 +2556,16 @@ class BL_UI_Slider(BL_UI_Widget):
 
     def set_available_lods(self, lod_levels):
         """Set which LOD levels are available (enabled markers)."""
-        print(f"🔧 [SLIDER] set_available_lods: {lod_levels}")
         self._available_lods = lod_levels
 
     def set_min_max_lods(self, min_lod, max_lod):
         """Set the min and max LOD values for displaying markers above the track."""
         # Only update if values actually changed to avoid unnecessary recalculations
         if self._min_lod != min_lod or self._max_lod != max_lod:
-            print(f"🔧 [SLIDER] set_min_max_lods: min_lod={min_lod}, max_lod={max_lod} (was: min={self._min_lod}, max={self._max_lod})")
             self._min_lod = min_lod
             self._max_lod = max_lod
             # Clear marker positions to force recalculation on next draw
             self._marker_positions = []
-            print(f"🔧 [SLIDER] Available LODs: {self._available_lods}")
-            print(f"🔧 [SLIDER] Auto LOD enabled: {self._auto_lod_enabled}")
-            
-            # Calculate what should be auto-generated for debugging
-            if self._auto_lod_enabled and self._available_lods:
-                auto_gen = []
-                for lod in range(min_lod, max_lod + 1):
-                    if lod not in self._available_lods:
-                        auto_gen.append(lod)
-                print(f"🔧 [SLIDER] LODs in range [{min_lod}-{max_lod}] that need auto-gen: {auto_gen}")
 
     def set_object_max_lod(self, max_lod):
         """Set the object's maximum available LOD level."""
@@ -2592,7 +2580,6 @@ class BL_UI_Slider(BL_UI_Widget):
 
     def set_auto_lod_enabled(self, enabled):
         """Set the Auto LOD enabled state (affects orange indicators)."""
-        print(f"🔧 [SLIDER] set_auto_lod_enabled: {enabled}")
         self._auto_lod_enabled = enabled
 
     def set_value(self, value):
@@ -3393,8 +3380,6 @@ class ImportToolbar:
             if hdr_file.exists():
                 hdri_name = png_file.stem  # Filename without extension
                 hdri_list.append((str(png_file), str(hdr_file), hdri_name))
-            else:
-                print(f"⚠️ Missing HDR file for thumbnail: {png_file.name}")
 
         # Sort by name, but put default HDRI first
         default_hdri_name = "kloofendal_48d_partly_cloudy_puresky_1k"
@@ -3408,7 +3393,6 @@ class ImportToolbar:
 
         hdri_list.sort(key=sort_key)
 
-        print(f"  🌅  Found {len(hdri_list)} HDRI assets")
         return hdri_list
 
     def init(self, context):
@@ -3423,7 +3407,6 @@ class ImportToolbar:
             world = bpy.context.scene.world
             if world:
                 self.original_world_nodes = self._backup_world_nodes(world)
-                print("  🌅  Backed up original world state")
 
         # Dimensions from spec
         button_width = 100  # Reduced from 120
@@ -3817,7 +3800,6 @@ class ImportToolbar:
         """Handle wireframe toggle button."""
         import bpy
         self.wireframe_enabled = toggled
-        print(f"  🔲  Wireframe {'enabled' if toggled else 'disabled'}")
 
         # Apply wireframe to all imported objects
         for obj in self.imported_objects:
@@ -3852,14 +3834,11 @@ class ImportToolbar:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
 
-        print("  🔲  Wireframe disabled")
-
     def _handle_floor_toggle(self, toggled):
         """Handle floor toggle button."""
         import bpy
         context = bpy.context
         self.floor_enabled = toggled
-        print(f"  🟫  Floor {'enabled' if toggled else 'disabled'}")
 
         if toggled:
             # Save current grid overlay settings before disabling
@@ -3876,7 +3855,6 @@ class ImportToolbar:
                     self.floor_obj = existing_floor
                     self.floor_obj.hide_select = True  # Ensure selection is disabled
                     self.floor_mat = bpy.data.materials.get("__QuixelFloorMaterial__")
-                    print(f"  🟫  Reusing existing floor plane")
                 else:
                     # Create new floor plane
                     try:
@@ -3885,9 +3863,7 @@ class ImportToolbar:
                             return
                         self.floor_obj, self.floor_mat = create_floor_plane(context)
                         if self.floor_obj is None or self.floor_mat is None:
-                            print(f"  ⚠️  Failed to create floor plane")
                             return
-                        print(f"  ✅  Created floor plane")
                     except Exception as e:
                         print(f"  ⚠️  Error creating floor plane: {e}")
                         import traceback
@@ -4004,16 +3980,13 @@ class ImportToolbar:
         # Force viewport update
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
-                area.tag_redraw()
-
-        print("  🟫  Floor disabled")
+                    area.tag_redraw()
 
 
     def _handle_hdri_toggle(self, toggled):
         """Handle HDRI toggle button - enables/disables viewport shading."""
         import bpy
         self.hdri_enabled = toggled
-        print(f"  🌅  HDRI viewport shading {'enabled' if toggled else 'disabled'}")
 
         if toggled:
             # Load default HDRI if this is the first time enabling and no HDRI is set
@@ -4024,7 +3997,6 @@ class ImportToolbar:
                     if hdri_name == default_hdri_name:
                         self.current_hdri = hdr_path
                         self._setup_hdri_background(hdr_path)
-                        print(f"  🌅  Loaded default HDRI: {hdri_name}")
                         # Update panel selection if it exists
                         if self.hdri_panel:
                             for btn in self.hdri_panel.thumbnail_buttons:
@@ -4033,7 +4005,6 @@ class ImportToolbar:
             else:
                 # Re-enable with previously selected HDRI
                 self._setup_hdri_background(self.current_hdri)
-                print(f"  🌅  Re-enabled HDRI: {Path(self.current_hdri).stem}")
         else:
             # When disabling, restore original world setup
             self._restore_world_background()
@@ -4074,14 +4045,11 @@ class ImportToolbar:
                 if area.type == 'VIEW_3D':
                     area.tag_redraw()
 
-        print(f"  🌅  HDRI panel {'opened' if self.hdri_panel_visible else 'closed'}")
-
     def _handle_hdri_selected(self, hdr_path, hdri_name):
         """Handle HDRI selection from panel."""
         import bpy
 
         self.current_hdri = hdr_path
-        print(f"  🌅  Selected HDRI: {hdri_name}")
 
         # Apply HDRI to world background
         self._setup_hdri_background(hdr_path)
@@ -4092,7 +4060,6 @@ class ImportToolbar:
             if self.hdri_toggle:
                 self.hdri_toggle._toggled = True
             self._set_viewport_shading(True)
-            print(f"  🌅  Auto-enabled HDRI viewport shading")
 
         # Keep the panel open so user can try different HDRIs
         # Panel will close when clicking outside or toggling dropdown
@@ -4152,15 +4119,12 @@ class ImportToolbar:
                             # Store current viewport shading settings ONLY if not already stored
                             if self.previous_shading_type is None:
                                 self.previous_shading_type = space.shading.type
-                                print(f"  🌅  Stored shading type: {space.shading.type}")
                             if self.previous_use_scene_world is None:
                                 self.previous_use_scene_world = space.shading.use_scene_world
-                                print(f"  🌅  Stored use_scene_world: {space.shading.use_scene_world}")
 
                             # Store current render engine and EEVEE settings
                             if self.previous_render_engine is None:
                                 self.previous_render_engine = scene.render.engine
-                                print(f"  🌅  Stored render engine: {scene.render.engine}")
 
                             # Check if current or previous engine is EEVEE (legacy or Next)
                             is_eevee = scene.render.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT')
@@ -4176,7 +4140,6 @@ class ImportToolbar:
                                         self.previous_ray_tracing_resolution = eevee.ray_tracing_options.resolution_scale
                                     self.previous_fast_gi = eevee.use_fast_gi if hasattr(eevee, 'use_fast_gi') else False
                                     self.previous_use_shadows = eevee.use_shadows if hasattr(eevee, 'use_shadows') else True
-                                    print(f"  🌅  Stored EEVEE settings")
 
                             # Enable RENDERED shading mode with scene world
                             space.shading.type = 'RENDERED'
@@ -4185,13 +4148,11 @@ class ImportToolbar:
                             # Switch to EEVEE render engine (use EEVEE_NEXT if available, otherwise legacy EEVEE)
                             try:
                                 scene.render.engine = 'BLENDER_EEVEE_NEXT'
-                                print(f"  🌅  Switched to EEVEE Next")
                             except:
                                 try:
                                     scene.render.engine = 'BLENDER_EEVEE'
-                                    print(f"  🌅  Switched to EEVEE (legacy)")
                                 except Exception as e:
-                                    print(f"  ⚠️  Could not switch to EEVEE: {e}")
+                                    pass
 
                             # Configure EEVEE settings with error handling
                             try:
@@ -4200,59 +4161,49 @@ class ImportToolbar:
                                 # Enable raytracing
                                 if hasattr(eevee, 'use_raytracing'):
                                     eevee.use_raytracing = True
-                                    print(f"  🌅  Enabled raytracing")
 
                                 # Set raytracing method
                                 if hasattr(eevee, 'ray_tracing_method'):
                                     try:
                                         eevee.ray_tracing_method = 'SCREEN'
-                                        print(f"  🌅  Set raytracing method to SCREEN")
                                     except Exception as e:
-                                        print(f"  ⚠️  Could not set raytracing method: {e}")
+                                        pass
 
                                 # Set raytracing resolution
                                 if hasattr(eevee, 'ray_tracing_options'):
                                     if hasattr(eevee.ray_tracing_options, 'resolution_scale'):
                                         try:
                                             eevee.ray_tracing_options.resolution_scale = 2
-                                            print(f"  🌅  Set raytracing resolution to 1:2")
                                         except Exception as e:
-                                            print(f"  ⚠️  Could not set raytracing resolution: {e}")
+                                            pass
 
                                 # Enable Fast GI
                                 if hasattr(eevee, 'use_fast_gi'):
                                     eevee.use_fast_gi = True
-                                    print(f"  🌅  Enabled Fast GI")
 
                                 # Enable shadows
                                 if hasattr(eevee, 'use_shadows'):
                                     eevee.use_shadows = True
-                                    print(f"  🌅  Enabled shadows")
 
                             except Exception as e:
-                                print(f"  ⚠️  Error configuring EEVEE settings: {e}")
-
-                            print(f"  🌅  Enabled RENDERED mode with EEVEE")
+                                pass
 
                         else:
                             # Restore previous shading mode
                             if self.previous_shading_type is not None:
                                 space.shading.type = self.previous_shading_type
-                                print(f"  🌅  Restored shading type: {self.previous_shading_type}")
                             else:
                                 space.shading.type = 'SOLID'
 
                             # Restore previous use_scene_world setting
                             if self.previous_use_scene_world is not None:
                                 space.shading.use_scene_world = self.previous_use_scene_world
-                                print(f"  🌅  Restored use_scene_world: {self.previous_use_scene_world}")
                             else:
                                 space.shading.use_scene_world = False
 
                             # Restore render engine
                             if self.previous_render_engine is not None:
                                 scene.render.engine = self.previous_render_engine
-                                print(f"  🌅  Restored render engine: {self.previous_render_engine}")
 
                             # Restore EEVEE settings if applicable (supports both legacy and Next)
                             if scene.render.engine in ('BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT'):
@@ -4267,7 +4218,6 @@ class ImportToolbar:
                                     eevee.use_fast_gi = self.previous_fast_gi
                                 if self.previous_use_shadows is not None and hasattr(eevee, 'use_shadows'):
                                     eevee.use_shadows = self.previous_use_shadows
-                                print(f"  🌅  Restored EEVEE settings")
 
                 area.tag_redraw()
 
@@ -4310,8 +4260,6 @@ class ImportToolbar:
         # Link nodes
         links.new(env_node.outputs['Color'], bg_node.inputs['Color'])
         links.new(bg_node.outputs['Background'], output_node.inputs['Surface'])
-
-        print(f"  🌅  HDRI background applied: {Path(hdri_path).name}")
 
     def _backup_world_nodes(self, world):
         """Backup the current world node setup."""
@@ -4400,8 +4348,6 @@ class ImportToolbar:
 
                     if from_socket and to_socket:
                         links.new(from_socket, to_socket)
-
-            print("  🌅  World background restored to original state")
         else:
             # No backup available, create default gray world
             world.use_nodes = True
@@ -4417,12 +4363,10 @@ class ImportToolbar:
             output_node.location = (300, 300)
 
             links.new(bg_node.outputs['Background'], output_node.inputs['Surface'])
-            print("  🌅  World background set to default gray")
 
     def _handle_auto_lod_change(self, checked):
         """Handle Auto LOD checkbox change."""
         self.auto_lod_enabled = checked
-        print(f"Auto LOD {'enabled' if self.auto_lod_enabled else 'disabled'}")
         # Update slider with Auto LOD state
         if self.lod_slider:
             self.lod_slider.set_auto_lod_enabled(checked)
@@ -4454,11 +4398,6 @@ class ImportToolbar:
         # Calculate target Quixel LOD from preview LOD position
         # Preview LOD position maps to Quixel LOD: quixel_lod = min_lod + preview_lod
         target_quixel_lod = min_lod + self.current_preview_lod
-        
-        print(f"🔍 [VISIBILITY] update_lod_visibility called:")
-        print(f"   - current_preview_lod (slider position): {self.current_preview_lod}")
-        print(f"   - min_lod: {min_lod}")
-        print(f"   - target_quixel_lod: {target_quixel_lod} (should show this Quixel LOD)")
 
         # Loop through each attach root (one per variation)
         for attach_root in self.attach_roots:
@@ -4474,8 +4413,6 @@ class ImportToolbar:
                 # Match by Quixel LOD, not preview LOD position
                 should_hide = (quixel_lod != target_quixel_lod)
                 child.hide_set(should_hide)
-                if not should_hide:
-                    print(f"   - Showing object: {child.name} (Quixel LOD {quixel_lod})")
 
         # Update text labels using eye icon
         if self.lod_text_objects:
@@ -4504,9 +4441,6 @@ class ImportToolbar:
                 should_hide = (text_quixel_lod != target_quixel_lod)
                 text_obj.hide_set(should_hide)
                 text_obj.hide_viewport = should_hide
-                
-                if not should_hide:
-                    print(f"   - Showing text: {text_obj.name} (Quixel LOD {text_quixel_lod})")
 
         # Tag viewport for redraw
         for area in bpy.context.screen.areas:
@@ -4516,7 +4450,6 @@ class ImportToolbar:
     def _handle_accept(self, button):
         """Handle Accept button click."""
         import bpy
-        print("Accepted Import")
 
         # Restore HDRI and viewport state to original
         if self.hdri_enabled:
@@ -4528,7 +4461,6 @@ class ImportToolbar:
             self._restore_world_background()
             # Restore original viewport shading
             self._set_viewport_shading(False)
-            print("  🌅  Restored original HDRI state")
 
         # Close HDRI panel if open
         if self.hdri_panel_visible:
@@ -4813,7 +4745,6 @@ class ImportToolbar:
                 continue
 
         # Step 2: Delete lower LODs
-        print(f"  🗑️  Deleting {len(objects_to_delete)} object(s) from LOD levels below LOD{target_lod}")
         for obj in objects_to_delete:
             try:
                 bpy.data.objects.remove(obj, do_unlink=True)
@@ -4822,7 +4753,6 @@ class ImportToolbar:
                 pass
 
         # Step 3: Rename remaining objects
-        print(f"  ✏️  Renaming {len(objects_to_rename)} object(s) to new LOD levels")
         for obj, old_lod in objects_to_rename:
             new_lod = old_lod - target_lod
 
@@ -4838,7 +4768,6 @@ class ImportToolbar:
                     base_name = parts[0]
                     # Set new LOD properties and get new name
                     set_ioi_lod_properties(obj, new_lod)
-                    print(f"    ✅ Renamed '{old_name}' (LOD{old_lod}) → '{obj.name}' (LOD{new_lod})")
             else:
                 # Handle simple format: _LOD0, _LOD1
                 import re
@@ -4846,9 +4775,6 @@ class ImportToolbar:
                 if new_name != old_name:
                     obj.name = new_name
                     set_ioi_lod_properties(obj, new_lod)
-                    print(f"    ✅ Renamed '{old_name}' (LOD{old_lod}) → '{new_name}' (LOD{new_lod})")
-
-        print(f"  ✅ LOD filtering complete")
 
     def _cleanup_unused_materials(self):
         """Remove all materials that are not being used by any imported objects."""
@@ -4967,7 +4893,6 @@ class ImportToolbar:
     def _handle_cancel(self, button):
         """Handle Cancel button click."""
         import bpy
-        print("Cancelling Import - Cleaning up...")
 
         # Cancel any pending LOD timer
         if self.pending_lod_timer is not None:
@@ -4989,7 +4914,6 @@ class ImportToolbar:
             self._restore_world_background()
             # Restore original viewport shading
             self._set_viewport_shading(False)
-            print("  🌅  Restored original HDRI state")
 
         # Close HDRI panel if open
         if self.hdri_panel_visible:
@@ -5032,9 +4956,6 @@ class ImportToolbar:
             except:
                 pass
 
-        if removed_objects > 0:
-            print(f"  🗑️  Removed {removed_objects} imported object(s)")
-
         # Remove imported materials (only if not used by other objects)
         removed_materials = 0
         skipped_materials = 0
@@ -5075,16 +4996,8 @@ class ImportToolbar:
                 else:
                     # Material is still used by other objects, skip
                     skipped_materials += 1
-                    print(f"  ⏭️  Skipped material '{mat.name}' (used by existing objects)")
             except Exception as e:
-                print(f"  ⚠️  Error checking material: {e}")
-
-        if removed_materials > 0:
-            print(f"  🗑️  Removed {removed_materials} unused imported material(s)")
-        if skipped_materials > 0:
-            print(f"  ℹ️  Kept {skipped_materials} material(s) in use by other objects")
-
-        print("✅ Import cleanup complete")
+                pass
 
     def set_imported_data(self, objects, materials, materials_before, original_scene=None, temp_scene=None):
         """Store references to imported data for cleanup.
@@ -5177,15 +5090,12 @@ class ImportToolbar:
             index = items.index(target_item)
             self.max_lod_dropdown._selected_index = index
             self.selected_max_lod = max_lod
-            print(f"✅ [TOOLBAR] Set max LOD dropdown to {target_item} (index {index})")
         else:
-            print(f"⚠️ [TOOLBAR] LOD{max_lod} not found in dropdown items: {items}")
             # Fallback to closest available LOD
             if max_lod <= 7:
                 # Use the max_lod as index directly (since items are LOD0-LOD7)
                 self.max_lod_dropdown._selected_index = max_lod
                 self.selected_max_lod = max_lod
-                print(f"✅ [TOOLBAR] Set max LOD dropdown to index {max_lod} (fallback)")
         
         # Trigger the change handler to update slider
         if self.max_lod_dropdown.on_change:
@@ -5223,12 +5133,9 @@ class ImportToolbar:
 
         # Validate: min_lod should not be greater than max_lod
         if min_lod > max_lod:
-            print(f"⚠️ [TOOLBAR] WARNING: min_lod ({min_lod}) > max_lod ({max_lod}), swapping values")
             min_lod, max_lod = max_lod, min_lod
 
         # Update slider markers
-        print(f"🔄 [TOOLBAR] _update_slider_minmax_markers called: min_lod={min_lod}, max_lod={max_lod}")
-        print(f"🔄 [TOOLBAR] Available LODs from import: {self.lod_levels}")
         self.lod_slider.set_min_max_lods(min_lod, max_lod)
         # Also update Auto LOD state
         self.lod_slider.set_auto_lod_enabled(self.auto_lod_enabled)
@@ -5243,8 +5150,6 @@ class ImportToolbar:
         if match:
             selected_lod = int(match.group(1))
             self.selected_lod_level = selected_lod
-
-            print(f"  🎨 Updating text colors for selected LOD{selected_lod}")
 
             # Update slider min/max markers
             self._update_slider_minmax_markers()
@@ -5282,14 +5187,12 @@ class ImportToolbar:
                     pass
             
             # Immediately update visibility and text labels when minLOD changes
-            print(f"🔄 [TOOLBAR] minLOD changed to LOD{selected_lod}, updating visibility and text labels immediately")
             self.update_lod_visibility()
             self._update_lod_text_labels()
             self._update_slider_labels()  # Update slider Quixel LOD labels
 
     def _on_max_lod_changed(self, selected_text):
         """Handle max LOD dropdown selection change - update markers."""
-        print(f"  📊 Max LOD changed to: {selected_text}")
         # Update slider min/max markers
         self._update_slider_minmax_markers()
         # Update text labels with Quixel LOD info (maxLOD might affect display)
@@ -5566,25 +5469,6 @@ class ImportToolbar:
         target_quixel_lod = quixel_lod  # This is the Quixel LOD we want to show
         
         import bpy
-        print(f"🔍 [TEXT UPDATE] _update_lod_text_labels called:")
-        print(f"   - current_preview_lod (slider position): {self.current_preview_lod}")
-        print(f"   - min_lod: {min_lod}")
-        print(f"   - target_quixel_lod: {target_quixel_lod} (should show this Quixel LOD's text)")
-        print(f"   - needs_auto_generation: {needs_auto_generation}")
-        print(f"   - Total text objects in list: {len(self.lod_text_objects)}")
-        
-        # Debug: List all text objects and their current visibility
-        print(f"   [DEBUG] Current text object states:")
-        for idx, item in enumerate(self.lod_text_objects):
-            try:
-                if isinstance(item, tuple) and len(item) >= 2:
-                    text_obj = item[0]
-                    text_quixel_lod = item[1]
-                    is_hidden = text_obj.hide_get() if hasattr(text_obj, 'hide_get') else text_obj.hide_viewport
-                    print(f"      [{idx}] {text_obj.name} - Quixel LOD: {text_quixel_lod}, Hidden: {is_hidden}")
-            except (AttributeError, ReferenceError) as e:
-                print(f"      [{idx}] ERROR accessing object: {e}")
-                continue
         
         # Hide text objects for LODs below minLOD (they should not be visible at all)
         # Also show text objects that are now within range (if minLOD decreased)
@@ -5596,7 +5480,6 @@ class ImportToolbar:
                     # Hide text objects for Quixel LODs below minLOD
                     if text_quixel_lod < min_lod:
                         text_obj.hide_set(True)
-                        print(f"   - Hiding text object for Quixel LOD {text_quixel_lod} (below minLOD {min_lod})")
                     # Note: We don't explicitly show objects here - visibility is handled by update_lod_visibility()
                     # which will show the correct text object based on target_quixel_lod
             except (AttributeError, ReferenceError):
@@ -5625,7 +5508,6 @@ class ImportToolbar:
                     should_hide = (text_quixel_lod != target_quixel_lod)
                     text_obj.hide_set(should_hide)
                     text_obj.hide_viewport = should_hide
-                    print(f"   [DEBUG] Text {text_obj.name} (Quixel LOD {text_quixel_lod}) - should_hide: {should_hide}, hide_set: {text_obj.hide_get() if hasattr(text_obj, 'hide_get') else 'N/A'}, hide_viewport: {text_obj.hide_viewport}")
                 except (AttributeError, ReferenceError):
                     continue
         
@@ -5651,14 +5533,12 @@ class ImportToolbar:
                     text_quixel_lod = temp_quixel_lod
                     total_tris = temp_total_tris
                     lod_exists = True
-                    print(f"   - Matched text object: {text_obj.name} (Quixel LOD {text_quixel_lod}, polycount: {total_tris:,})")
                     break
             except (AttributeError, ReferenceError):
                 continue
         
         # If LOD doesn't exist, create a text object for it
         if not lod_exists:
-            print(f"   [MISSING LOD] Creating text object for missing Quixel LOD {target_quixel_lod}")
             # Find a reference text object to get position and size (use LOD0 or first available)
             reference_text_obj = None
             reference_text_data = None
@@ -5733,14 +5613,11 @@ class ImportToolbar:
                 
                 # Store in lod_text_objects for future reference
                 self.lod_text_objects.append((text_obj, target_quixel_lod, 0))
-                print(f"   [MISSING LOD] Created text object for missing LOD {target_quixel_lod}")
             else:
-                print(f"   [MISSING LOD] Could not create text object - no reference found")
                 return
         
         # Now update the text object (either existing or newly created)
         if not text_obj or not text_obj.data:
-            print(f"   [ERROR] Text object is None or has no data for Quixel LOD {target_quixel_lod}")
             return
             
         text_data = text_obj.data
@@ -5752,10 +5629,8 @@ class ImportToolbar:
         preview_lod_display = self.current_preview_lod
         if lod_exists:
             text_data.body = f"LOD{preview_lod_display}\n{total_tris:,} tris"
-            print(f"   - Updated text body to: LOD{preview_lod_display} with {total_tris:,} tris")
         else:
             text_data.body = f"LOD{preview_lod_display}\n??? tris"
-            print(f"   - Updated text body to: LOD{preview_lod_display} with ??? tris (missing LOD)")
         
         # Remove blue coloring - use normal white/gray based on hierarchy
         # Use preview LOD for color hierarchy, not Quixel LOD

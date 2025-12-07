@@ -44,15 +44,12 @@ def organize_3d_plant_objects_by_variation(import_groups):
     """
     variations = {}
     
-    print(f"🌱 [3D PLANT] Organizing objects by folder-based variations...")
-    
     for import_group in import_groups:
         variation_index = import_group.get('variation_index')
         objects = import_group.get('objects', [])
         fbx_file = import_group.get('fbx_file')
         
         if variation_index is None:
-            print(f"🌱 [3D PLANT]   ⚠️  FBX {fbx_file.name} has no variation index - skipping")
             continue
         
         # Convert index to letter suffix (0→a, 1→b, etc.)
@@ -64,10 +61,7 @@ def organize_3d_plant_objects_by_variation(import_groups):
         # Filter to only mesh objects
         mesh_objects = [obj for obj in objects if obj.type == 'MESH' and obj.data]
         variations[letter_suffix].extend(mesh_objects)
-        
-        print(f"🌱 [3D PLANT]   Variation {letter_suffix} (index {variation_index}): {len(mesh_objects)} object(s) from {fbx_file.name}")
     
-    print(f"🌱 [3D PLANT] Organized into {len(variations)} variation(s)")
     return variations
 
 
@@ -107,12 +101,10 @@ def organize_objects_by_variation(objects):
             
             # Only process mesh objects
             if obj.type != 'MESH' or not obj.data:
-                print(f"    ⏭️  Skipping non-mesh object: {obj.name}")
                 continue
             
             # Only process objects in the current scene (ignore leftovers from previous imports)
             if current_scene and obj.name not in current_scene.objects:
-                print(f"    ⏭️  Skipping object not in current scene: {obj.name}")
                 continue
             
             # Detect the variation index (numeric)
@@ -369,7 +361,6 @@ def calculate_variation_bbox(mesh_objects):
               This should be called BEFORE parenting to attach root.
     """
     if not mesh_objects:
-        print(f"    ⚠️  No mesh objects for bbox calculation")
         return {'min_x': 0.0, 'max_x': 0.0, 'width': 0.0, 'height': 0.0, 'depth': 0.0}
     
     # Get world space bounding box coordinates for all objects
@@ -382,7 +373,6 @@ def calculate_variation_bbox(mesh_objects):
                 all_coords.append(world_coord)
     
     if not all_coords:
-        print(f"    ⚠️  No valid coordinates for bbox calculation")
         return {'min_x': 0.0, 'max_x': 0.0, 'width': 0.0, 'height': 0.0, 'depth': 0.0}
     
     # Calculate min and max coordinates

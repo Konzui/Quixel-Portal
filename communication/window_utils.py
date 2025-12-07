@@ -134,7 +134,6 @@ def set_foreground_window(hwnd):
         # Also set focus to ensure keyboard input goes to this window
         if result:
             user32.SetFocus(hwnd)
-            print(f"✅ WindowUtils: Window {hwnd} brought to foreground")
             return True
         else:
             print(f"❌ WindowUtils: Failed to set foreground window {hwnd}")
@@ -163,16 +162,13 @@ def activate_window_forcefully(hwnd):
         return False
 
     try:
-        print(f"🔍 DEBUG: Forcefully activating window {hwnd}...")
 
         # Check initial state
         is_minimized = user32.IsIconic(hwnd)
         is_visible = user32.IsWindowVisible(hwnd)
-        print(f"🔍 DEBUG: Window state - Minimized: {is_minimized}, Visible: {is_visible}")
 
         # Step 1: If minimized, restore it properly
         if is_minimized:
-            print("🔍 DEBUG: Window is minimized, restoring...")
             # Try multiple restore methods
             user32.ShowWindow(hwnd, SW_RESTORE)
             time.sleep(0.2)
@@ -181,7 +177,6 @@ def activate_window_forcefully(hwnd):
 
             # Verify restoration
             still_minimized = user32.IsIconic(hwnd)
-            print(f"🔍 DEBUG: After restore - Still minimized: {still_minimized}")
 
         # Step 2: Make absolutely sure window is visible and enabled
         user32.ShowWindow(hwnd, SW_SHOW)
@@ -191,14 +186,12 @@ def activate_window_forcefully(hwnd):
         # Step 3: Get our thread and target thread
         current_thread = kernel32.GetCurrentThreadId()
         target_thread = user32.GetWindowThreadProcessId(hwnd, None)
-        print(f"🔍 DEBUG: Current thread: {current_thread}, Target thread: {target_thread}")
 
         # Step 4: Disable foreground lock timeout (requires registry change, but we can try)
         # Get current foreground window and its thread
         current_foreground = user32.GetForegroundWindow()
         foreground_thread = user32.GetWindowThreadProcessId(current_foreground, None) if current_foreground else 0
 
-        print(f"🔍 DEBUG: Current foreground window: {current_foreground}, Thread: {foreground_thread}")
 
         # Step 5: Attach to both current foreground thread AND target thread
         attached_to_foreground = False
@@ -207,12 +200,10 @@ def activate_window_forcefully(hwnd):
         if foreground_thread and foreground_thread != current_thread:
             result = user32.AttachThreadInput(current_thread, foreground_thread, True)
             attached_to_foreground = bool(result)
-            print(f"🔍 DEBUG: Attached to foreground thread: {attached_to_foreground}")
 
         if target_thread != current_thread:
             result = user32.AttachThreadInput(current_thread, target_thread, True)
             attached_to_target = bool(result)
-            print(f"🔍 DEBUG: Attached to target thread: {attached_to_target}")
 
         # Small delay for attachment to take effect
         time.sleep(0.05)
@@ -233,18 +224,15 @@ def activate_window_forcefully(hwnd):
         # Step 7: Use SwitchToThisWindow as final attempt (undocumented but effective)
         try:
             user32.SwitchToThisWindow(hwnd, True)
-            print("🔍 DEBUG: Called SwitchToThisWindow")
         except:
             pass
 
         # Step 8: Detach threads
         if attached_to_foreground and foreground_thread:
             user32.AttachThreadInput(current_thread, foreground_thread, False)
-            print("🔍 DEBUG: Detached from foreground thread")
 
         if attached_to_target:
             user32.AttachThreadInput(current_thread, target_thread, False)
-            print("🔍 DEBUG: Detached from target thread")
 
         # Step 9: Final verification with multiple checks
         time.sleep(0.1)
@@ -252,13 +240,10 @@ def activate_window_forcefully(hwnd):
         is_still_minimized = user32.IsIconic(hwnd)
         is_now_visible = user32.IsWindowVisible(hwnd)
 
-        print(f"🔍 DEBUG: Final state - Foreground window: {final_foreground}, Minimized: {is_still_minimized}, Visible: {is_now_visible}")
 
         success = (final_foreground == hwnd and not is_still_minimized and is_now_visible)
 
-        if success:
-            print(f"✅ WindowUtils: Window {hwnd} successfully activated and verified")
-        else:
+        if not success:
             print(f"⚠️ WindowUtils: Activation may have failed - Target: {hwnd}, Actual foreground: {final_foreground}")
 
         return success
@@ -338,7 +323,6 @@ def wait_for_process_window(pid, timeout=5.0, window_title_contains=None):
         user32.EnumWindows(callback, 0)
 
         if found_hwnd:
-            print(f"✅ WindowUtils: Found window {found_hwnd} for PID {pid}")
             return found_hwnd
 
         # Sleep a bit before next check
@@ -413,7 +397,6 @@ def find_window_by_title(title_contains):
     Returns:
         int: Window handle (HWND) or None if not found
     """
-    print(f"🔍 DEBUG: Searching for window with title containing '{title_contains}'...")
 
     found_hwnd = None
     found_titles = []
@@ -435,7 +418,6 @@ def find_window_by_title(title_contains):
                 # Check if title contains the search string
                 if title_contains.lower() in title.lower():
                     found_hwnd = hwnd
-                    print(f"✅ DEBUG: Found matching window: '{title}' (HWND: {hwnd})")
                     return False  # Stop enumeration
 
         return True  # Continue enumeration
@@ -445,10 +427,7 @@ def find_window_by_title(title_contains):
     user32.EnumWindows(callback, 0)
 
     if not found_hwnd:
-        print(f"❌ DEBUG: No window found with title containing '{title_contains}'")
-        print(f"🔍 DEBUG: First 10 visible window titles:")
-        for i, title in enumerate(found_titles[:10]):
-            print(f"  {i+1}. {title}")
+        pass
 
     return found_hwnd
 
@@ -462,7 +441,6 @@ def is_process_running(process_name):
     Returns:
         bool: True if process is running
     """
-    print(f"🔍 DEBUG: Checking if process '{process_name}' is running (using ctypes)...")
 
     # Normalize process name (ensure .exe extension)
     if not process_name.lower().endswith('.exe'):
@@ -498,7 +476,6 @@ def is_process_running(process_name):
             # Check if matches target process
             if current_process.lower() == process_name.lower():
                 found_count += 1
-                print(f"✅ DEBUG: Found '{current_process}' (PID: {pe32.th32ProcessID})")
 
             # Get next process
             if not kernel32.Process32Next(snapshot, ctypes.byref(pe32)):
@@ -507,14 +484,10 @@ def is_process_running(process_name):
         # Close snapshot handle
         kernel32.CloseHandle(snapshot)
 
-        print(f"🔍 DEBUG: Found {found_count} instance(s) of '{process_name}'")
-        print(f"🔍 DEBUG: Total processes scanned: {len(process_list)}")
 
         if found_count == 0:
             # Show similar process names for debugging
             similar = [p for p in process_list if 'bridge' in p.lower()]
-            if similar:
-                print(f"🔍 DEBUG: Processes with 'bridge' in name: {similar}")
 
         return found_count > 0
 

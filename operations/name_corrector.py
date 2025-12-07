@@ -117,7 +117,6 @@ def find_canonical_base_name(import_results):
                 base_clean = re.sub(r'_\d{2}_[a-z]$|_[a-z]$', '', name_without_lod, flags=re.IGNORECASE)
                 if base_clean and len(base_clean) > 3:  # Must be meaningful
                     base_name_candidates.append(base_clean)
-                    print(f"    🔍 Found candidate base name: '{base_clean}' from object '{obj_name}'")
             else:
                 # Even without clear variation pattern, if it has LOD, try to extract base
                 # This handles cases like "Aset_props__M_wk2jchx_LOD2"
@@ -126,7 +125,6 @@ def find_canonical_base_name(import_results):
                 base_clean = name_without_lod.rstrip('_')
                 if base_clean and len(base_clean) > 3:
                     base_name_candidates.append(base_clean)
-                    # Print removed to reduce console clutter
     
     if not base_name_candidates:
         # Fallback: try to extract from FBX filenames
@@ -145,7 +143,6 @@ def find_canonical_base_name(import_results):
                 base_clean = re.sub(r'_\d{2}_[a-z]$|_[a-z]$', '', name_without_lod, flags=re.IGNORECASE).strip('_')
                 if base_clean and len(base_clean) > 3:
                     base_name_candidates.append(base_clean)
-                    print(f"    🔍 Found candidate base name from FBX: '{base_clean}' from '{fbx_file.name}'")
     
     if not base_name_candidates:
         return None
@@ -153,8 +150,6 @@ def find_canonical_base_name(import_results):
     # Find the most common base name (should be the canonical one)
     base_name_counter = Counter(base_name_candidates)
     canonical_base = base_name_counter.most_common(1)[0][0]
-    
-    # Print removed to reduce console clutter
     
     return canonical_base
 
@@ -281,7 +276,6 @@ def rename_objects_to_match(objects, fbx_mapping):
         # Check if name already matches
         if obj.name == expected_name:
             stats['already_correct'] += 1
-            print(f"    ✅ Object '{obj.name}' already has correct name")
             continue
         
         # Check if name is close (maybe just missing LOD or variation)
@@ -291,15 +285,11 @@ def rename_objects_to_match(objects, fbx_mapping):
             old_name = obj.name
             obj.name = expected_name
             stats['renamed'] += 1
-            # Print removed to reduce console clutter
         else:
             # Name is completely wrong - rename it
             old_name = obj.name
             obj.name = expected_name
             stats['renamed'] += 1
-            # Print removed to reduce console clutter
-    
-    # Renaming summary prints removed to reduce console clutter
     
     return stats
 
