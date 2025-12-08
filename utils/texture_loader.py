@@ -61,6 +61,9 @@ def find_texture_files(asset_dir, extensions=None, texture_resolution=None):
         texture_files.extend(asset_dir.glob(f"**/*{ext}"))
         texture_files.extend(asset_dir.glob(f"**/*{ext.upper()}"))
 
+    # Always exclude textures from "thumbs" folder (low-res previews)
+    texture_files = [f for f in texture_files if "thumbs" not in str(f.parent).lower()]
+
     # Filter by resolution if specified
     if texture_resolution:
         # Normalize resolution (e.g., "2K" -> "2k" for comparison)

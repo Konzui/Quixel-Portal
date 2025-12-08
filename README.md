@@ -10,6 +10,8 @@ A Blender addon that integrates with Quixel Bridge for seamless asset import dir
 - Automatic material creation with texture mapping
 - Variation support with proper spacing
 - LOD (Level of Detail) switching and preview
+- **Custom preview workspace** with distraction-free 3D viewport-only layout
+- Automatic workspace restoration after import/cancel
 - Compatible with Blender 4.2.1 LTS and Python 3.11
 
 ## Project Structure
@@ -49,6 +51,7 @@ The addon is organized into clear, modular components:
 ### Communication Layer (`communication/`)
 
 Handles all interaction with Quixel Bridge:
+
 
 - **quixel_bridge_socket.py**: Socket listener that receives JSON data from Quixel Bridge on port 24981
 

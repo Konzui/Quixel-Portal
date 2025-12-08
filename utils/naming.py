@@ -181,18 +181,51 @@ def index_to_letter_suffix(index):
     return suffix
 
 
+def get_material_size_from_json(asset_dir):
+    """Extract material size from JSON metadata.
+
+    Args:
+        asset_dir: Path to the asset directory
+
+    Returns:
+        tuple: (min_size, max_size) in meters, or (2.0, 2.0) if not found
+    """
+    json_file = find_json_file(asset_dir)
+    if not json_file:
+        return 2.0, 2.0
+
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            json_data = json.load(f)
+
+        # Get minSize and maxSize from JSON
+        min_size = json_data.get('minSize', 2.0)
+        max_size = json_data.get('maxSize', 2.0)
+
+        # Ensure valid values
+        if not isinstance(min_size, (int, float)) or min_size <= 0:
+            min_size = 2.0
+        if not isinstance(max_size, (int, float)) or max_size <= 0:
+            max_size = 2.0
+
+        return float(min_size), float(max_size)
+    except Exception as e:
+        print(f"  ⚠️ Failed to extract material size from JSON: {e}")
+        return 2.0, 2.0
+
+
 def get_base_name(name):
     """Extract base name from object name, removing only the LOD suffix at the end.
-    
+
     Args:
         name: Object name to process
-        
+
     Returns:
         str: Base name without LOD suffix
     """
     # Pattern to match LOD suffixes
     lod_pattern = re.compile(r'_?LOD\d+$', re.IGNORECASE)
-    
+
     # Remove LOD suffix if present (only at the very end)
     match = lod_pattern.search(name)
     if match:
@@ -201,6 +234,6 @@ def get_base_name(name):
             # Only remove if the match is at the very end
             base_name = name[:match.start()]
             return base_name
-    
+
     return name
 

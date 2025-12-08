@@ -169,7 +169,7 @@ def create_floor_plane(context):
 
 
 def cleanup_floor_plane(floor_obj=None, floor_mat=None):
-    """Remove the temporary floor plane and its material.
+    """Remove the temporary floor plane and its materials.
 
     Args:
         floor_obj: Floor object to remove (optional, will search by name if None)
@@ -180,11 +180,33 @@ def cleanup_floor_plane(floor_obj=None, floor_mat=None):
         if floor_obj is None:
             floor_obj = bpy.data.objects.get("__QuixelFloor__")
 
+        # Before removing floor object, collect any materials it's using
+        floor_materials_to_remove = []
+        if floor_obj:
+            try:
+                # Check if object still exists and has valid data
+                if floor_obj.name in bpy.data.objects and floor_obj.data:
+                    for mat_slot in floor_obj.data.materials:
+                        if mat_slot and "_FloorPreview" in mat_slot.name:
+                            floor_materials_to_remove.append(mat_slot)
+            except (ReferenceError, AttributeError):
+                # Object was already removed, skip material collection
+                pass
+
         # Remove floor object
         if floor_obj:
             try:
-                bpy.data.objects.remove(floor_obj, do_unlink=True)
-            except Exception as e:
+                if floor_obj.name in bpy.data.objects:
+                    bpy.data.objects.remove(floor_obj, do_unlink=True)
+            except (ReferenceError, AttributeError):
+                pass
+
+        # Remove floor-specific materials (duplicates created for floor preview)
+        for mat in floor_materials_to_remove:
+            try:
+                if mat.name in bpy.data.materials:
+                    bpy.data.materials.remove(mat)
+            except (ReferenceError, AttributeError):
                 pass
 
         # Find floor material if not provided
@@ -194,11 +216,89 @@ def cleanup_floor_plane(floor_obj=None, floor_mat=None):
         # Remove floor material
         if floor_mat:
             try:
-                bpy.data.materials.remove(floor_mat)
-            except Exception as e:
+                if floor_mat.name in bpy.data.materials:
+                    bpy.data.materials.remove(floor_mat)
+            except (ReferenceError, AttributeError):
                 pass
 
     except Exception as e:
         print(f"⚠️ Error during floor plane cleanup: {e}")
         import traceback
         traceback.print_exc()
+
+
+def update_floor_plane_material(floor_obj, new_material, material_size_x, material_size_y):
+    """Replace floor plane's dev texture with imported material.
+
+    Creates a duplicate material specifically for the floor with world-space
+    planar projection and correct tiling based on material size.
+
+    Args:
+        floor_obj: Floor plane object to update
+        new_material: Material to apply to the floor
+        material_size_x: Material size in X direction (meters)
+        material_size_y: Material size in Y direction (meters)
+
+    Returns:
+        bool: True if update was successful, False otherwise
+    """
+    if not floor_obj or not new_material:
+        return False
+
+    try:
+        # Create a duplicate material specifically for the floor
+        # This prevents conflicts with the sphere material
+        floor_material = new_material.copy()
+        floor_material.name = f"{new_material.name}_FloorPreview"
+
+        # Modify the floor material to use world-space planar projection
+        if floor_material.use_nodes:
+            nodes = floor_material.node_tree.nodes
+            links = floor_material.node_tree.links
+
+            # Find all Image Texture nodes
+            image_texture_nodes = [node for node in nodes if node.type == 'TEX_IMAGE']
+
+            if image_texture_nodes:
+                # Create Texture Coordinate node with Generated coordinates (world space)
+                tex_coord_node = nodes.new(type='ShaderNodeTexCoord')
+                tex_coord_node.location = (-1000, 0)
+                tex_coord_node.name = "FloorTexCoord"
+
+                # Create Mapping node for world-space scaling
+                mapping_node = nodes.new(type='ShaderNodeMapping')
+                mapping_node.location = (-800, 0)
+                mapping_node.name = "FloorMapping"
+
+                # Calculate scale for proper tiling
+                # For a 2m material on a 500m floor: scale = 500 / 2 = 250
+                scale_x = 500.0 / material_size_x if material_size_x > 0 else 250.0
+                scale_y = 500.0 / material_size_y if material_size_y > 0 else 250.0
+                mapping_node.inputs['Scale'].default_value = (scale_x, scale_y, 1.0)
+
+                # Use Generated coordinates for world-space projection
+                links.new(tex_coord_node.outputs['Generated'], mapping_node.inputs['Vector'])
+
+                # Connect Mapping to all Image Texture nodes
+                for img_node in image_texture_nodes:
+                    # Disconnect any existing vector input
+                    if img_node.inputs['Vector'].is_linked:
+                        for link in img_node.inputs['Vector'].links:
+                            links.remove(link)
+
+                    # Connect Mapping to this texture
+                    links.new(mapping_node.outputs['Vector'], img_node.inputs['Vector'])
+
+        # Apply the floor-specific material
+        if len(floor_obj.data.materials) == 0:
+            floor_obj.data.materials.append(floor_material)
+        else:
+            floor_obj.data.materials[0] = floor_material
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Failed to update floor plane material: {e}")
+        import traceback
+        traceback.print_exc()
+        return False

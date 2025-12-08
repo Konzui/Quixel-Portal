@@ -29,7 +29,7 @@ from .operations.asset_processor import (
     cleanup_unused_materials,
     set_ioi_lod_properties_for_objects,
 )
-from .utils.naming import get_name_from_json, get_base_name
+from .utils.naming import get_name_from_json, get_base_name, get_material_size_from_json
 from .utils.texture_loader import find_texture_files
 from .utils.validation import is_folder_empty, check_folder_contents
 from .utils.scene_manager import (
@@ -39,10 +39,14 @@ from .utils.scene_manager import (
     cleanup_preview_scene,
     cleanup_imported_materials,
     setup_preview_camera,
+    maximize_viewport_area,
+    restore_previous_area,
+    create_preview_sphere,
 )
 from .utils.floor_plane_manager import (
     create_floor_plane,
     cleanup_floor_plane,
+    update_floor_plane_material,
 )
 from .ui.import_modal import show_import_toolbar
 
@@ -240,29 +244,15 @@ def import_asset(asset_path, thumbnail_path=None, asset_name=None, glacier_setup
     
     # Detect asset type
     asset_type = detect_asset_type(asset_dir)
-    
+
     if asset_type == 'surface':
-        # Handle surface material
-        if create_surface_material(asset_dir, context):
-            # Force Blender to update the viewport/depsgraph before notifying
-            bpy.context.view_layer.update()
-            
-            # Get asset name
-            if not asset_name:
-                asset_name = asset_dir.name
-                json_name, _ = get_name_from_json(asset_dir)
-                if json_name:
-                    asset_name = json_name
-            
-            return {'FINISHED'}
-        else:
-            print(f"❌ Failed to create surface material")
-            return {'CANCELLED'}
-    
+        # Handle surface material with new preview system
+        return _import_surface_material(asset_dir, materials_before_import, context, asset_name, glacier_setup, texture_resolution)
+
     elif asset_type == 'fbx':
         # Handle FBX import
         return _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_path, asset_name, glacier_setup, texture_resolution)
-    
+
     else:
         print(f"⚠️ No FBX files or surface materials found in {asset_dir}")
         return {'CANCELLED'}
@@ -816,6 +806,216 @@ def _import_fbx_asset(asset_dir, materials_before_import, context, thumbnail_pat
                 
                 # Print performance breakdown
                 _print_performance_breakdown()
+
+        # Set the callbacks on the toolbar
+        toolbar.on_accept = on_accept
+        toolbar.on_cancel = on_cancel
+
+    return {'FINISHED'}
+
+
+def _import_surface_material(asset_dir, materials_before_import, context, asset_name, glacier_setup=True, texture_resolution=None):
+    """Import a surface material with preview sphere and floor plane.
+
+    Args:
+        asset_dir: Path to asset directory
+        materials_before_import: Set of material names before import
+        context: Blender context
+        asset_name: Asset name
+        glacier_setup: Whether to show toolbar with import settings (default: True)
+        texture_resolution: Optional texture resolution from Bridge (e.g., "2K", "4K", "8K")
+
+    Returns:
+        dict: Blender operator result
+    """
+    # Clean up any leftover state from previous imports
+    from .ui.import_modal import cleanup_toolbar
+    cleanup_toolbar()
+
+    # Always use fresh context to avoid stale references
+    try:
+        context = bpy.context
+    except:
+        print(f"❌ Could not get valid context")
+        return {'CANCELLED'}
+
+    # Validate context before proceeding
+    try:
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print(f"❌ Context scene is invalid")
+            return {'CANCELLED'}
+    except (AttributeError, KeyError, ReferenceError):
+        print(f"❌ Context validation failed")
+        return {'CANCELLED'}
+
+    # Store original scene reference BEFORE creating temp scene
+    original_scene = context.scene
+    original_collection = context.collection
+
+    # Get material size from JSON
+    material_size_x, material_size_y = get_material_size_from_json(asset_dir)
+
+    # Create material from textures with resolution filter
+    from .operations.material_creator import create_surface_material
+    if not create_surface_material(asset_dir, context, texture_resolution=texture_resolution):
+        print(f"❌ Failed to create surface material")
+        return {'CANCELLED'}
+
+    # Get the created material
+    from .utils.naming import get_material_name_from_json
+    material_name = get_material_name_from_json(asset_dir)
+    if not material_name or material_name not in bpy.data.materials:
+        print(f"❌ Material was not created properly")
+        return {'CANCELLED'}
+
+    created_material = bpy.data.materials[material_name]
+
+    # Check if we should show preview (glacier_setup enabled and no objects selected)
+    selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+    should_show_preview = glacier_setup and not selected_objects
+
+    if not should_show_preview:
+        # Direct import without preview - material already applied to selection or just created
+        return {'FINISHED'}
+
+    # Only create preview scene if Glacier setup is enabled and no selection
+    temp_scene = None
+    floor_obj = None
+    floor_mat = None
+    sphere_obj = None
+
+    # Create temporary preview scene for import
+    temp_scene = create_preview_scene(context)
+
+    # Switch to temporary scene for import
+    if not switch_to_scene(context, temp_scene):
+        print(f"❌ Failed to switch to preview scene")
+        return {'CANCELLED'}
+
+    # Update context after scene switch
+    context = bpy.context
+
+    # Create temporary floor plane with dev texture
+    floor_obj, floor_mat = create_floor_plane(context)
+
+    # Replace floor plane material with imported material
+    if floor_obj:
+        update_floor_plane_material(floor_obj, created_material, material_size_x, material_size_y)
+
+    # Create preview sphere with material
+    sphere_obj = create_preview_sphere(context, created_material, material_size_x, material_size_y)
+
+    # Track imported objects and materials
+    all_imported_objects_tracker = []
+    all_imported_materials_tracker = [created_material]
+
+    if sphere_obj:
+        all_imported_objects_tracker.append(sphere_obj)
+    if floor_obj:
+        all_imported_objects_tracker.append(floor_obj)
+
+    # Force Blender to update
+    bpy.context.view_layer.update()
+
+    # Frame imported objects (sphere + floor)
+    frame_imported_objects(all_imported_objects_tracker, context, skip_if_temp_scene=False)
+
+    # Validate context one more time before showing toolbar
+    try:
+        context = bpy.context
+        if context.scene is None or context.scene.name not in bpy.data.scenes:
+            print(f"❌ Context scene is invalid before showing toolbar")
+            if temp_scene:
+                cleanup_floor_plane(floor_obj, floor_mat)
+                switch_to_scene(bpy.context, original_scene)
+                cleanup_preview_scene(temp_scene)
+            return {'CANCELLED'}
+    except Exception as e:
+        print(f"❌ Context validation failed before showing toolbar: {e}")
+        try:
+            if temp_scene:
+                cleanup_floor_plane(floor_obj, floor_mat)
+                switch_to_scene(bpy.context, original_scene)
+                cleanup_preview_scene(temp_scene)
+        except:
+            pass
+        return {'CANCELLED'}
+
+    # Show import confirmation toolbar
+    from .ui.import_modal import show_import_toolbar, get_active_toolbar
+
+    result = show_import_toolbar(
+        context,
+        all_imported_objects_tracker,
+        all_imported_materials_tracker,
+        materials_before_import,
+        original_scene=original_scene,
+        temp_scene=temp_scene
+    )
+
+    # Set the accept callback
+    toolbar = get_active_toolbar()
+    if toolbar:
+        # Disable LOD controls for material imports (no LODs for materials)
+        # The toolbar will handle this automatically based on available LODs
+
+        # Define accept callback - only keep material, discard sphere
+        def on_accept():
+            """Handle accept - keep material only, discard sphere and return to original scene."""
+            from .ui.import_modal import cleanup_toolbar
+
+            try:
+                # Clean up temporary floor plane before cleanup
+                cleanup_floor_plane(floor_obj, floor_mat)
+
+                # Switch back to original scene WITHOUT transferring sphere
+                # The material is already in bpy.data.materials and available globally
+                switch_to_scene(bpy.context, original_scene)
+
+                # Delete temporary preview scene (this removes the sphere)
+                cleanup_preview_scene(temp_scene)
+
+                # Material is now available in the original scene
+                # User can apply it to objects manually
+
+            except Exception as e:
+                print(f"\n⚠️ Error during accept cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+
+            finally:
+                # ALWAYS clean up toolbar UI
+                cleanup_toolbar()
+
+        # Define cancel callback - discard everything and return to original scene
+        def on_cancel():
+            """Handle cancel - discard all assets and return to original scene."""
+            from .ui.import_modal import cleanup_toolbar
+
+            try:
+                # Clean up temporary floor plane
+                cleanup_floor_plane(floor_obj, floor_mat)
+
+                # Switch back to original scene first
+                switch_to_scene(bpy.context, original_scene)
+
+                # Delete temporary preview scene (auto-cleanup of objects)
+                cleanup_preview_scene(temp_scene)
+
+                # Clean up materials that were created during import
+                cleanup_imported_materials(
+                    all_imported_materials_tracker,
+                    materials_before_import
+                )
+
+            except Exception as e:
+                print(f"\n⚠️ Error during cancel cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+
+            finally:
+                # ALWAYS clean up toolbar UI
+                cleanup_toolbar()
 
         # Set the callbacks on the toolbar
         toolbar.on_accept = on_accept

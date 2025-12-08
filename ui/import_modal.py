@@ -12,6 +12,22 @@ from .import_toolbar import ImportToolbar
 _active_toolbar = None
 _draw_handler = None
 _mouse_tracker_running = False
+_maximize_timer = None
+
+
+def _delayed_maximize():
+    """Timer callback to maximize viewport after modal operator is initialized."""
+    global _maximize_timer
+
+    try:
+        from ..utils.scene_manager import maximize_viewport_area
+        maximize_viewport_area(bpy.context)
+    except Exception as e:
+        print(f"⚠️ Delayed maximization failed: {e}")
+    finally:
+        # Stop the timer
+        _maximize_timer = None
+        return None  # Return None to stop timer
 
 
 def get_active_toolbar():

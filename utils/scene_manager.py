@@ -279,6 +279,89 @@ def cleanup_imported_materials(imported_materials, materials_before_import):
                 print(f"  ⚠️ Failed to remove material (already deleted): {e}")
 
 
+def maximize_viewport_area(context):
+    """Maximize the 3D viewport area to focus on preview.
+
+    This hides all other UI panels and maximizes the 3D viewport,
+    creating a distraction-free preview environment.
+
+    Args:
+        context: Blender context
+
+    Returns:
+        bool: True if maximization was successful, False otherwise
+    """
+    try:
+        # Find the 3D viewport area
+        viewport_area = None
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                viewport_area = area
+                break
+
+        if not viewport_area:
+            print("⚠️ Could not find 3D viewport to maximize")
+            return False
+
+        # Create a temporary context override for the viewport area
+        override_context = context.copy()
+        override_context['area'] = viewport_area
+        override_context['region'] = viewport_area.regions[-1]  # Use last region (usually the main one)
+
+        # Maximize the viewport area (hides all other panels)
+        with context.temp_override(**override_context):
+            bpy.ops.screen.screen_full_area(use_hide_panels=True)
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Failed to maximize viewport: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def restore_previous_area(context):
+    """Restore the previous area layout after maximization.
+
+    This returns the UI to its state before maximize_viewport_area() was called.
+
+    Args:
+        context: Blender context
+
+    Returns:
+        bool: True if restoration was successful, False otherwise
+    """
+    try:
+        # Find the 3D viewport area (it should still be maximized)
+        viewport_area = None
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                viewport_area = area
+                break
+
+        if not viewport_area:
+            print("⚠️ Could not find 3D viewport to restore")
+            return False
+
+        # Create a temporary context override for the viewport area
+        override_context = context.copy()
+        override_context['area'] = viewport_area
+        override_context['region'] = viewport_area.regions[-1]
+
+        # Restore previous layout
+        with context.temp_override(**override_context):
+            bpy.ops.screen.back_to_previous()
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Failed to restore previous area: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def setup_preview_camera(temp_scene, imported_objects):
     """Set up a camera in the preview scene to frame imported objects.
 
@@ -337,3 +420,52 @@ def setup_preview_camera(temp_scene, imported_objects):
 
     # Set as active camera
     temp_scene.camera = camera_obj
+
+
+def create_preview_sphere(context, material, material_size_x, material_size_y):
+    """Create a UV sphere for material preview.
+
+    Creates a 2-meter diameter sphere hovering 1 meter above the floor,
+    with the material applied and UV scaling adjusted for proper tiling.
+
+    Args:
+        context: Blender context
+        material: Material to apply to the sphere
+        material_size_x: Material size in X direction (meters)
+        material_size_y: Material size in Y direction (meters)
+
+    Returns:
+        bpy.types.Object: The created sphere object
+    """
+    # Create UV sphere (2m diameter = 1m radius)
+    bpy.ops.mesh.primitive_uv_sphere_add(
+        radius=1.0,
+        location=(0, 0, 1),  # Center at 1m height, so bottom touches floor at z=0
+        segments=64,
+        ring_count=32
+    )
+
+    sphere_obj = context.active_object
+    sphere_obj.name = "QuixelMaterialPreviewSphere"
+
+    # Apply shade smooth to the sphere for better material preview
+    bpy.ops.object.shade_smooth()
+
+    # Add Subdivision Surface modifier for better displacement preview
+    subsurf_modifier = sphere_obj.modifiers.new(name="Subdivision", type='SUBSURF')
+    subsurf_modifier.levels = 4
+    subsurf_modifier.render_levels = 4
+
+    # Apply material to sphere
+    if len(sphere_obj.data.materials) == 0:
+        sphere_obj.data.materials.append(material)
+    else:
+        sphere_obj.data.materials[0] = material
+
+    # Apply correct UV scale to the material for this specific object
+    # The sphere is 2m in diameter, and we want the material to tile correctly
+    # based on its real-world size
+    from ..operations.material_creator import apply_correct_uv_scale
+    apply_correct_uv_scale(material, sphere_obj, material_size_x, material_size_y)
+
+    return sphere_obj

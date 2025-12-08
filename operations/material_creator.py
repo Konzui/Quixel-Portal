@@ -4,12 +4,93 @@ This module handles material creation, texture discovery, and material assignmen
 """
 
 import bpy
+import mathutils
 import re
 import hashlib
 from pathlib import Path
 
 from ..utils.texture_loader import load_texture, find_texture_files, identify_texture_type, is_billboard_texture
 from ..utils.naming import find_json_file
+
+
+def apply_correct_uv_scale(material, obj, material_size_x, material_size_y):
+    """Apply correct UV scaling to material for proper world-space tiling.
+
+    Inserts UV Mapping and Mapping nodes before all texture nodes to ensure
+    the material tiles at the correct real-world size on the object.
+
+    Args:
+        material: Material to modify
+        obj: Object the material is applied to
+        material_size_x: Material size in X direction (meters)
+        material_size_y: Material size in Y direction (meters)
+    """
+    if not material or not material.use_nodes:
+        return
+
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+
+    # Calculate object size in world space
+    # Get bounding box dimensions
+    if obj.type == 'MESH':
+        bbox_corners = [obj.matrix_world @ mathutils.Vector(corner) for corner in obj.bound_box]
+        min_x = min(corner.x for corner in bbox_corners)
+        max_x = max(corner.x for corner in bbox_corners)
+        min_y = min(corner.y for corner in bbox_corners)
+        max_y = max(corner.y for corner in bbox_corners)
+
+        obj_size_x = max_x - min_x
+        obj_size_y = max_y - min_y
+    else:
+        # Fallback for non-mesh objects
+        obj_size_x = obj.dimensions.x
+        obj_size_y = obj.dimensions.y
+
+    # Calculate scale factors
+    # Scale = object_size / material_size
+    # For a 2m object with 2m material: scale = 1.0 (no tiling)
+    # For a 500m object with 2m material: scale = 250.0 (250x250 tiles)
+    scale_x = obj_size_x / material_size_x if material_size_x > 0 else 1.0
+    scale_y = obj_size_y / material_size_y if material_size_y > 0 else 1.0
+
+    # Find all Image Texture nodes
+    image_texture_nodes = [node for node in nodes if node.type == 'TEX_IMAGE']
+
+    if not image_texture_nodes:
+        return
+
+    # Look for existing Quixel UV/Mapping nodes first
+    existing_tex_coord = nodes.get("QuixelUVCoord")
+    existing_mapping = nodes.get("QuixelMapping")
+
+    # If they exist, just update the scale
+    if existing_tex_coord and existing_mapping:
+        existing_mapping.inputs['Scale'].default_value = (scale_x, scale_y, 1.0)
+        return
+
+    # Create shared UV Map and Mapping nodes
+    tex_coord_node = nodes.new(type='ShaderNodeTexCoord')
+    tex_coord_node.location = (-1000, 0)
+    tex_coord_node.name = "QuixelUVCoord"
+
+    mapping_node = nodes.new(type='ShaderNodeMapping')
+    mapping_node.location = (-800, 0)
+    mapping_node.name = "QuixelMapping"
+    mapping_node.inputs['Scale'].default_value = (scale_x, scale_y, 1.0)
+
+    # Connect UV to Mapping
+    links.new(tex_coord_node.outputs['UV'], mapping_node.inputs['Vector'])
+
+    # Connect Mapping to all Image Texture nodes
+    for img_node in image_texture_nodes:
+        # Disconnect any existing vector input
+        if img_node.inputs['Vector'].is_linked:
+            for link in img_node.inputs['Vector'].links:
+                links.remove(link)
+
+        # Connect Mapping to this texture
+        links.new(mapping_node.outputs['Vector'], img_node.inputs['Vector'])
 
 
 def create_material_from_textures(material_name, textures, context):
@@ -36,24 +117,24 @@ def create_material_from_textures(material_name, textures, context):
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
-    
+
     # Get or create Principled BSDF
     bsdf = nodes.get("Principled BSDF")
     if not bsdf:
         bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
-    
+
     # Load Albedo texture
     if 'albedo' in textures and textures['albedo']:
         albedo_node = load_texture(nodes, 'Albedo', textures['albedo'], 'sRGB')
         if albedo_node:
             links.new(albedo_node.outputs['Color'], bsdf.inputs['Base Color'])
-    
+
     # Load Roughness texture
     if 'roughness' in textures and textures['roughness']:
         roughness_node = load_texture(nodes, 'Roughness', textures['roughness'], 'Non-Color')
         if roughness_node:
             links.new(roughness_node.outputs['Color'], bsdf.inputs['Roughness'])
-    
+
     # Load Normal texture
     if 'normal' in textures and textures['normal']:
         normal_node = load_texture(nodes, 'Normal', textures['normal'], 'Non-Color')
@@ -63,13 +144,13 @@ def create_material_from_textures(material_name, textures, context):
             normal_map_node.location = (-300, -400)
             links.new(normal_node.outputs['Color'], normal_map_node.inputs['Color'])
             links.new(normal_map_node.outputs['Normal'], bsdf.inputs['Normal'])
-    
+
     # Load Metallic texture
     if 'metallic' in textures and textures['metallic']:
         metallic_node = load_texture(nodes, 'Metallic', textures['metallic'], 'Non-Color')
         if metallic_node:
             links.new(metallic_node.outputs['Color'], bsdf.inputs['Metallic'])
-    
+
     # Load Opacity/Alpha/Mask texture
     if 'opacity' in textures and textures['opacity']:
         opacity_node = load_texture(nodes, 'Opacity', textures['opacity'], 'Non-Color')
@@ -79,7 +160,35 @@ def create_material_from_textures(material_name, textures, context):
             # Use HASHED for grass/foliage with alpha cutouts (avoids transparency sorting issues)
             mat.blend_method = 'HASHED'
             # Print removed to reduce console clutter
-    
+
+    # Load Displacement texture
+    if 'displacement' in textures and textures['displacement']:
+        displacement_node = load_texture(nodes, 'Displacement', textures['displacement'], 'Non-Color')
+        if displacement_node:
+            displacement_node.location = (-600, -800)
+
+            # Get Material Output node
+            output_node = nodes.get("Material Output")
+            if not output_node:
+                output_node = nodes.new(type='ShaderNodeOutputMaterial')
+                output_node.location = (300, 0)
+
+            # Create Displacement node
+            displacement_shader = nodes.new(type='ShaderNodeDisplacement')
+            displacement_shader.location = (0, -400)
+
+            # Connect: Texture -> Displacement -> Material Output
+            links.new(displacement_node.outputs['Color'], displacement_shader.inputs['Height'])
+            links.new(displacement_shader.outputs['Displacement'], output_node.inputs['Displacement'])
+
+            # Set displacement settings
+            displacement_shader.inputs['Scale'].default_value = 0.5
+            displacement_shader.inputs['Midlevel'].default_value = 0.5
+
+            # Set material settings for displacement
+            # Settings tab in Material Properties
+            mat.cycles.displacement_method = 'BOTH'  # Displacement and Bump
+
     # Print removed to reduce console clutter
     return mat
 
@@ -486,36 +595,40 @@ def compare_texture_sets(texture_sets):
     return True, first_textures
 
 
-def create_surface_material(asset_dir, context):
+def create_surface_material(asset_dir, context, texture_resolution=None):
     """Create a material for a surface asset from JSON and textures.
-    
+
     Args:
         asset_dir: Path to the asset directory
         context: Blender context
-        
+        texture_resolution: Optional texture resolution from Bridge (e.g., "2K", "4K", "8K")
+
     Returns:
         bool: True if material was created successfully, False otherwise
     """
     asset_dir = Path(asset_dir)
-    
+
     # Find JSON file
     json_file = find_json_file(asset_dir)
     if not json_file:
         print(f"  ⚠️ No JSON file found in {asset_dir}")
         return False
-    
+
     # Get material name from JSON
     from ..utils.naming import get_material_name_from_json
     material_name = get_material_name_from_json(asset_dir)
     if not material_name:
         print(f"  ⚠️ Could not extract material name from JSON")
         return False
-    
-    # Find all texture files
-    texture_files = find_texture_files(asset_dir)
+
+    # Find all texture files with resolution filter
+    texture_files = find_texture_files(asset_dir, texture_resolution=texture_resolution)
 
     if not texture_files:
         print(f"  ⚠️ No texture files found in {asset_dir}")
+        if texture_resolution:
+            print(f"     Requested resolution: {texture_resolution}")
+            print(f"     Try checking if textures exist for this resolution")
         return False
 
     # Check if material already exists - if so, reuse it

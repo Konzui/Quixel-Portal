@@ -80,6 +80,13 @@ def register():
     except Exception as e:
         pass
 
+    # Clean up any orphaned preview workspaces from previous sessions
+    try:
+        from .utils.workspace_manager import cleanup_orphaned_preview_workspaces
+        cleanup_orphaned_preview_workspaces()
+    except Exception as e:
+        pass
+
     # Register icon loader
     icon_loader.register()
 
